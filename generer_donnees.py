@@ -1,22 +1,68 @@
 # -*- coding: utf-8 -*-
 """Régénère donnees.json à partir du classeur.
 
-Usage :  python generer_donnees.py Base_lignes_du_temps.xlsx
-Dépendance unique :  pip install openpyxl
+    python generer_donnees.py Base_lignes_du_temps.xlsx
+    python generer_donnees.py <id-du-google-sheets> --sortie site/donnees.json
+    python generer_donnees.py https://docs.google.com/spreadsheets/d/<id>/edit
+
+Dépendance unique : pip install openpyxl
 
 Le classeur reste la source de vérité. Ce script ne fait que traduire ses
 onglets « Lignes du temps » et « Objets » dans le format compact que la page
-sait lire, puis écrit donnees.json à côté de index.html.
+sait lire. Un classeur Google est téléchargé au format xlsx ; il doit être
+partagé en lecture par lien, sans quoi Google renvoie une page de connexion
+au lieu du fichier.
 """
+import argparse
 import json
+import os
 import re
 import sys
+import tempfile
+import urllib.request
 from datetime import date
 
 from openpyxl import load_workbook
 
-SRC = sys.argv[1] if len(sys.argv) > 1 else "Base_lignes_du_temps.xlsx"
-DST = "donnees.json"
+RE_SHEETS = re.compile(r"docs\.google\.com/spreadsheets/d/([\w-]{20,})")
+RE_ID = re.compile(r"^[\w-]{30,}$")
+
+
+def obtenir(source):
+    """Renvoie un chemin local, en téléchargeant d'abord si nécessaire."""
+    ident = None
+    m = RE_SHEETS.search(source)
+    if m:
+        ident = m.group(1)
+    elif RE_ID.match(source.strip()):
+        ident = source.strip()
+    if not ident:
+        if not os.path.exists(source):
+            sys.exit(f"Introuvable : {source}")
+        return source
+
+    url = f"https://docs.google.com/spreadsheets/d/{ident}/export?format=xlsx"
+    print("Téléchargement du classeur Google…")
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    with urllib.request.urlopen(url, timeout=120) as r:
+        tmp.write(r.read())
+    tmp.close()
+    with open(tmp.name, "rb") as f:
+        if f.read(2) != b"PK":
+            sys.exit("Google n'a pas renvoyé un classeur. Vérifiez que le "
+                     "document est partagé en lecture par lien.")
+    print(f"  {os.path.getsize(tmp.name) / 1e6:.1f} Mo reçus")
+    return tmp.name
+
+
+ap = argparse.ArgumentParser()
+ap.add_argument("source", nargs="?", default="Base_lignes_du_temps.xlsx",
+                help="chemin du .xlsx, ou identifiant / URL du Google Sheets")
+ap.add_argument("--sortie", default="donnees.json")
+args = ap.parse_args()
+
+SRC = obtenir(args.source)
+DST = args.sortie
 
 PETITS = {"and", "of", "the", "in", "for", "&"}
 SIGLES = {"UK", "USA"}
@@ -133,6 +179,9 @@ for row in ws.iter_rows(min_row=2, values_only=True):
                            row[k["End Hour"]]),
     ])
 
+dossier = os.path.dirname(DST)
+if dossier:
+    os.makedirs(dossier, exist_ok=True)
 with open(DST, "w", encoding="utf-8") as f:
     json.dump({"lignes": lignes, "sections": sections, "objets": objets},
               f, ensure_ascii=False, separators=(",", ":"))
