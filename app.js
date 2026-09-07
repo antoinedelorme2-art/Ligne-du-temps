@@ -8,7 +8,7 @@
 const L_ID=0, L_NOM=1, L_FR=2, L_SEC=3, L_SECFR=4, L_COUL=5;
 const O_NOM=0, O_FR=1, O_LIG=2, O_DEB=3, O_FIN=4, O_PREC=5, O_QUAL=6,
       O_MARGED=7, O_MARGEF=8, O_NOTES=9, O_URL=10, O_FIABLE=11, O_SOUS=12,
-      O_ENS=13, O_TD=14, O_TF=15;
+      O_ENS=13, O_TD=14, O_TF=15, O_BQ=16, O_GRP=17;
 
 /* ------------------------------------------------- positions infra-annuelles
    O_TD / O_TF portent la position dans l'année, en minutes depuis le 1er
@@ -52,7 +52,9 @@ const I18N = {
     vers:"vers ", ans:"ans", a:" à ", regleAn:"année", reglePas:"par $ ans",
     prec:{ "jour":"jour","mois":"mois","année":"année","décennie":"décennie",
            "siècle":"siècle","millénaire":"millénaire","indéterminée":"indéterminée" },
-    fermer:"Fermer",
+    fermer:"Fermer", banques:"Banques de données", banque:"Banque",
+    concordance:"Datation concordante", divergence:"Datation divergente",
+    aussiDans:"Aussi dans", selon:"Selon",
   },
   en: {
     titre:"Timelines", objets:"objects", pistes:"tracks",
@@ -70,7 +72,9 @@ const I18N = {
     vers:"c. ", ans:"years", a:" to ", regleAn:"year", reglePas:"every $ years",
     prec:{ "jour":"day","mois":"month","année":"year","décennie":"decade",
            "siècle":"century","millénaire":"millennium","indéterminée":"undetermined" },
-    fermer:"Close",
+    fermer:"Close", banques:"Data banks", banque:"Bank",
+    concordance:"Dating agrees", divergence:"Dating differs",
+    aussiDans:"Also in", selon:"According to",
   },
 };
 function T(k){ return I18N[vue.lang][k]; }
@@ -87,6 +91,22 @@ const parSection = new Map();          // clé de section → objet section
 }
 lignes.forEach((l, i) => parSection.get(l[L_SEC]).lignes.push(i));
 function nomSection(s){ return vue.lang === "fr" ? s.nomFr : s.nomEn; }
+
+const banques = DONNEES.banques || ["—"];
+const nbParBanque = banques.map(() => 0);
+objets.forEach(o => nbParBanque[o[O_BQ]]++);
+
+// Objets rapprochés d'une banque à l'autre : indexés par numéro de groupe.
+const parGroupe = new Map();
+objets.forEach((o, i) => {
+  if (!o[O_GRP]) return;
+  if (!parGroupe.has(o[O_GRP])) parGroupe.set(o[O_GRP], []);
+  parGroupe.get(o[O_GRP]).push(i);
+});
+const signature = i => {
+  const o = objets[i];
+  return o[O_DEB] + ":" + o[O_FIN] + ":" + o[O_TD] + ":" + o[O_TF];
+};
 // couleurs portées par un objet : les siennes et celles des ensembles liés
 function couleursObjet(i, defaut){
   const e = objets[i][O_ENS];
@@ -112,6 +132,7 @@ const vue = {
   lang: "fr",
   verifOnly: false,
   masquerVides: false,
+  banques: new Set(banques.map((_, i) => i)),   // banques affichées
   recherche: "",
 };
 
@@ -190,6 +211,12 @@ let hauteurTotale = 0;
 
 function correspond(i){
   const o = objets[i];
+  if (!vue.banques.has(o[O_BQ])) return false;
+  // Datation identique dans plusieurs banques : un seul objet est tracé.
+  if (o[O_GRP]) {
+    const e = etatGroupe.get(o[O_GRP]);
+    if (e && e.sigs.get(signature(i)) !== i) return false;
+  }
   if (vue.verifOnly && !o[O_FIABLE]) return false;
   if (vue.recherche) {
     const t = (o[O_NOM] + " " + (o[O_FR] || "")).toLowerCase();
@@ -238,10 +265,31 @@ function ranger(iLigne, anD, anF, etiquettes){
     while (r < MAXR && rangs[r] !== undefined && rangs[r] > occ0 - 4) r++;
     if (r >= MAXR) { r = MAXR - 1; etiq = null; }
     else rangs[r] = occ1;
+    const eg = o[O_GRP] ? etatGroupe.get(o[O_GRP]) : null;
     places.push({ i, r, x0, x1, xc0, xc1, etiq, xEtiq, dedans, lw,
-                  couls: couleursObjet(i, coulLigne) });
+                  couls: couleursObjet(i, coulLigne),
+                  divergent: !!(eg && eg.divergent) });
   }
   return { places, nbRangs: Math.max(1, rangs.length) };
+}
+
+// Pour chaque groupe : les datations proposées par les banques affichées, et
+// l'objet retenu quand plusieurs banques disent exactement la même chose.
+let etatGroupe = new Map();
+function evaluerGroupes(){
+  etatGroupe = new Map();
+  for (const [g, membres] of parGroupe) {
+    const vus = membres.filter(i => vue.banques.has(objets[i][O_BQ]));
+    if (!vus.length) continue;
+    const sigs = new Map();
+    for (const i of vus) {
+      const s = signature(i);
+      const p = sigs.get(s);
+      // à datation égale, la banque la plus à gauche dans la liste l'emporte
+      if (p === undefined || objets[i][O_BQ] < objets[p][O_BQ]) sigs.set(s, i);
+    }
+    etatGroupe.set(g, { sigs, divergent: sigs.size > 1, membres: vus });
+  }
 }
 
 function construirePlan(){
@@ -526,6 +574,14 @@ function dessinerPistes(){
       };
       if (o[O_FIN] !== null && largeur > 2.5) {
         bandes(GOUT + p.xc0, yc - 7, largeur, 15);
+        if (p.divergent) {
+          ctx.save();
+          ctx.setLineDash([3, 2]);
+          ctx.strokeStyle = "#1B2320";
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(GOUT + p.xc0 - 1.5, yc - 8.5, largeur + 3, 18);
+          ctx.restore();
+        }
         if (sel || surv) {
           ctx.strokeStyle = "#1B2320";
           ctx.lineWidth = 1;
@@ -544,6 +600,17 @@ function dessinerPistes(){
         } else {
           ctx.fillStyle = sel ? "#2C4C6B" : couls[0] + "D9";
           ctx.fill();
+        }
+        if (p.divergent) {
+          ctx.save();
+          ctx.setLineDash([3, 2]);
+          ctx.strokeStyle = "#1B2320";
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(x, yc - ry - 3); ctx.lineTo(x + rx + 3, yc);
+          ctx.lineTo(x, yc + ry + 3); ctx.lineTo(x - rx - 3, yc);
+          ctx.closePath(); ctx.stroke();
+          ctx.restore();
         }
         if (sel || surv) { ctx.strokeStyle = "#1B2320"; ctx.lineWidth = 1; ctx.stroke(); }
       }
@@ -663,6 +730,7 @@ function rendre(){
     enAttente = false;
     ctx.font = "11px " + getComputedStyle(document.body).getPropertyValue("--sans");
     GRAD = calculerGraduations();
+    evaluerGroupes();
     construirePlan();
     ctx.clearRect(0, 0, W, H);
     dessinerFond();
@@ -860,6 +928,26 @@ function ouvrirFiche(i){
       ? ' <span class="jeton">' + T("fiable") + "</span>"
       : ' <span class="jeton avert">' + T("pasFiable") + "</span>")));
   c.push(champ(T("ligne"), echapper(nomLigne(o[O_LIG]))));
+  c.push(champ(T("banque"), echapper(banques[o[O_BQ]])));
+  if (o[O_GRP]) {
+    const e = etatGroupe.get(o[O_GRP]);
+    if (e) {
+      const memeDate = e.membres.filter(j => j !== i && signature(j) === signature(i));
+      const autreDate = e.membres.filter(j => signature(j) !== signature(i));
+      const bloc = [];
+      if (memeDate.length) {
+        bloc.push('<div><span class="jeton">' + T("concordance") + "</span> " +
+          echapper([...new Set(memeDate.map(j => banques[objets[j][O_BQ]]))].join(", ")) +
+          "</div>");
+      }
+      for (const j of autreDate) {
+        bloc.push('<div style="margin-top:4px"><span class="jeton avert">' +
+          T("divergence") + "</span> " + echapper(banques[objets[j][O_BQ]]) +
+          " : " + echapper(datePhrase(objets[j])) + "</div>");
+      }
+      if (bloc.length) c.push(champ(T("selon"), bloc.join("")));
+    }
+  }
   if (o[O_SOUS]) c.push(champ(T("sousPiste"), echapper(o[O_SOUS])));
   if (o[O_ENS]) c.push(champ(T("ensembles"), '<span class="rubans">' +
     o[O_ENS].map(k => '<span class="ruban"><i style="background:' + sections[k].couleur +
@@ -964,6 +1052,7 @@ function appliquerLangue(){
   d("tVerif").textContent = T("verif");
   d("tVides").textContent = T("vides");
   d("tSec").textContent = T("sec");
+  d("tBanques").textContent = T("banques");
   d("toutCocher").textContent = T("cocher");
   d("toutDecocher").textContent = T("decocher");
   d("tAide").textContent = T("aide");
@@ -1002,6 +1091,19 @@ window.addEventListener("keydown", e => {
 });
 
 /* -------------------------------------------------------------- sections */
+const listeBq = document.getElementById("listeBanques");
+listeBq.innerHTML = banques.map((b, i) =>
+  '<li><input type="checkbox" id="b' + i + '" checked data-b="' + i + '">' +
+  '<label for="b' + i + '">' + echapper(b) +
+  ' <span class="compte">' + nbParBanque[i].toLocaleString("fr-CA") +
+  "</span></label></li>").join("");
+listeBq.addEventListener("change", e => {
+  const i = e.target.dataset.b;
+  if (i === undefined) return;
+  if (e.target.checked) vue.banques.add(+i); else vue.banques.delete(+i);
+  rendre();
+});
+
 const liste = document.getElementById("listeSections");
 liste.innerHTML = sections.map((s, i) =>
   '<li><input type="checkbox" id="s' + i + '" checked data-i="' + i + '">' +
