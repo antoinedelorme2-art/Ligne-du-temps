@@ -19,40 +19,90 @@ import os
 import re
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 from datetime import date
 
 from openpyxl import load_workbook
 
 RE_SHEETS = re.compile(r"docs\.google\.com/spreadsheets/d/([\w-]{20,})")
+RE_DRIVE = re.compile(r"drive\.google\.com/file/d/([\w-]{20,})")
 RE_ID = re.compile(r"^[\w-]{30,}$")
+
+
+def echec(*lignes):
+    """Message d'erreur visible dans l'interface d'Actions, puis arrêt."""
+    print("::error::" + lignes[0])
+    for l in lignes[1:]:
+        print("   " + l)
+    sys.exit(1)
+
+
+def essayer(url):
+    """Télécharge une URL. Renvoie (octets, statut, message) sans lever."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return r.read(), r.status, r.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e:
+        return b"", e.code, str(e)
+    except Exception as e:                                  # réseau, DNS, délai
+        return b"", 0, str(e)
 
 
 def obtenir(source):
     """Renvoie un chemin local, en téléchargeant d'abord si nécessaire."""
+    source = (source or "").strip()
     ident = None
     m = RE_SHEETS.search(source)
     if m:
         ident = m.group(1)
-    elif RE_ID.match(source.strip()):
-        ident = source.strip()
+    elif RE_DRIVE.search(source):
+        ident = RE_DRIVE.search(source).group(1)
+    elif RE_ID.match(source):
+        ident = source
     if not ident:
         if not os.path.exists(source):
-            sys.exit(f"Introuvable : {source}")
+            echec(f"Classeur introuvable : {source!r}",
+                  "Attendu : un chemin de fichier, un identifiant Google, ou une URL.")
         return source
 
-    url = f"https://docs.google.com/spreadsheets/d/{ident}/export?format=xlsx"
-    print("Téléchargement du classeur Google…")
-    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
-    with urllib.request.urlopen(url, timeout=120) as r:
-        tmp.write(r.read())
-    tmp.close()
-    with open(tmp.name, "rb") as f:
-        if f.read(2) != b"PK":
-            sys.exit("Google n'a pas renvoyé un classeur. Vérifiez que le "
-                     "document est partagé en lecture par lien.")
-    print(f"  {os.path.getsize(tmp.name) / 1e6:.1f} Mo reçus")
-    return tmp.name
+    # Deux points d'entrée : un vrai Google Sheets, ou un .xlsx déposé dans
+    # Drive sans conversion. Le second ne répond pas à l'export Sheets.
+    tentatives = [
+        ("classeur Google Sheets",
+         f"https://docs.google.com/spreadsheets/d/{ident}/export?format=xlsx"),
+        ("fichier .xlsx dans Drive",
+         f"https://drive.google.com/uc?export=download&id={ident}"),
+    ]
+    dernier = ""
+    for quoi, url in tentatives:
+        print(f"Tentative : {quoi}…")
+        donnees, statut, info = essayer(url)
+        if donnees[:2] == b"PK":
+            tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+            tmp.write(donnees)
+            tmp.close()
+            print(f"  reçu : {len(donnees) / 1e6:.1f} Mo")
+            return tmp.name
+        apercu = donnees[:200].decode("utf-8", "replace").replace("\n", " ")
+        dernier = f"HTTP {statut}, {info}, début de la réponse : {apercu!r}"
+        print(f"  échec — {dernier}")
+
+    echec(
+        "Impossible de récupérer le classeur.",
+        f"Identifiant utilisé : {ident}",
+        f"Dernière réponse : {dernier}",
+        "",
+        "Trois causes possibles, par ordre de fréquence :",
+        "1. Le fichier n'est pas partagé. Ouvrez-le, Partager → Accès général →",
+        "   « Tous les utilisateurs disposant du lien », rôle Lecteur.",
+        "2. C'est un .xlsx déposé dans Drive, pas un Google Sheets. Ouvrez-le et",
+        "   faites Fichier → Enregistrer au format Google Sheets, puis reprenez",
+        "   l'identifiant du NOUVEAU document.",
+        "3. L'identifiant du secret CLASSEUR est celui d'un dossier Drive et non",
+        "   d'un document.",
+    )
 
 
 ap = argparse.ArgumentParser()
@@ -105,9 +155,26 @@ def minutes_dans_annee(an, mois, jour, heure):
 
 wb = load_workbook(SRC, read_only=True, data_only=True)
 
+for onglet in ("Lignes du temps", "Objets"):
+    if onglet not in wb.sheetnames:
+        echec(f"Onglet « {onglet} » absent du classeur.",
+              "Onglets trouvés : " + ", ".join(wb.sheetnames))
+
+
+def verifier(ws, attendues):
+    presentes = [c.value for c in next(ws.iter_rows(max_row=1))]
+    manquantes = [c for c in attendues if c not in presentes]
+    if manquantes:
+        echec(f"Colonnes manquantes dans l'onglet « {ws.title} » : "
+              + ", ".join(manquantes),
+              "En-têtes trouvés : " + ", ".join(str(p) for p in presentes if p))
+    return {h: i for i, h in enumerate(presentes)}
+
+
 # ------------------------------------------------------------ lignes du temps
 ws = wb["Lignes du temps"]
-idx = {h: i for i, h in enumerate(c.value for c in next(ws.iter_rows(max_row=1)))}
+verifier(ws, ["ID", "Nom (clé)", "Nom français", "Section", "Section (fr)", "Couleur"])
+idx = verifier(ws, ["ID", "Nom (clé)", "Section"])
 lignes, cle_vers_i = [], {}
 sections, sec_index, sec_fr_index = [], {}, {}
 
@@ -138,7 +205,12 @@ def ensembles(txt):
 
 # -------------------------------------------------------------------- objets
 ws = wb["Objets"]
-k = {h: i for i, h in enumerate(c.value for c in next(ws.iter_rows(max_row=1)))}
+k = verifier(ws, ["Objet", "Version française", "Timeline", "Début (num)",
+                  "Fin (num)", "Précision début", "Qualificatif début",
+                  "Marge début (± ans)", "Marge fin (± ans)", "Notes", "URL1",
+                  "Fiabilité date", "Sous-piste", "Ensembles liés",
+                  "Start Month", "Start Date", "Start Hour",
+                  "End Month", "End Date", "End Hour"])
 objets, orphelins = [], set()
 
 for row in ws.iter_rows(min_row=2, values_only=True):
@@ -185,6 +257,11 @@ if dossier:
 with open(DST, "w", encoding="utf-8") as f:
     json.dump({"lignes": lignes, "sections": sections, "objets": objets},
               f, ensure_ascii=False, separators=(",", ":"))
+
+if not objets:
+    echec("Aucun objet exploitable dans le classeur.",
+          "Vérifiez que la colonne « Début (num) » contient bien des valeurs "
+          "calculées et non des formules vides.")
 
 print(f"{DST} : {len(objets)} objets, {len(lignes)} pistes, "
       f"{len(sections)} sections")
