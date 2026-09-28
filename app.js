@@ -44,7 +44,6 @@ const I18N = {
     aff:"Affichage", verif:"Afficher seulement les dates lues dans le texte source",
     vides:"Masquer les pistes vides à l'écran", sec:"Sections",
     cocher:"Tout cocher", decocher:"Tout décocher",
-    aide:"Molette : zoom · Maj+molette ou ascenseur de droite : défilement vertical · Glisser : déplacer · Clic sur un objet : fiche détaillée",
     datation:"Datation", precision:"Précision", ligne:"Ligne du temps",
     sousPiste:"Sous-piste", source:"Source", ensembles:"Ensembles concernés",
     fiable:"date lue dans le texte source",
@@ -55,6 +54,9 @@ const I18N = {
     fermer:"Fermer", banques:"Banques de données", banque:"Banque",
     concordance:"Datation concordante", divergence:"Datation divergente",
     aussiDans:"Aussi dans", selon:"Selon",
+    bande:"Climat et catastrophes", categorie:"Catégorie", ampleur:"Ampleur",
+    reperes:"Référent climatique", afficherBande:"Afficher la bande en haut",
+    aide:"Ctrl+molette : zoom · Molette : défilement vertical · Maj+molette : défilement horizontal · Glisser (bouton gauche ou du milieu) : déplacer · Clic : fiche détaillée",
   },
   en: {
     titre:"Timelines", objets:"objects", pistes:"tracks",
@@ -64,7 +66,6 @@ const I18N = {
     aff:"Display", verif:"Show only dates read from the source text",
     vides:"Hide tracks with nothing on screen", sec:"Sections",
     cocher:"Check all", decocher:"Uncheck all",
-    aide:"Wheel: zoom · Shift+wheel or right-hand scrollbar: vertical scroll · Drag: pan · Click an object: details",
     datation:"Dating", precision:"Precision", ligne:"Timeline",
     sousPiste:"Sub-track", source:"Source", ensembles:"Groups involved",
     fiable:"date read from the source text",
@@ -75,6 +76,9 @@ const I18N = {
     fermer:"Close", banques:"Data banks", banque:"Bank",
     concordance:"Dating agrees", divergence:"Dating differs",
     aussiDans:"Also in", selon:"According to",
+    bande:"Climate and disasters", categorie:"Category", ampleur:"Magnitude",
+    reperes:"Climate reference", afficherBande:"Show the band on top",
+    aide:"Ctrl+wheel: zoom · Wheel: vertical scroll · Shift+wheel: horizontal scroll · Drag (left or middle button): pan · Click: details",
   },
 };
 function T(k){ return I18N[vue.lang][k]; }
@@ -91,6 +95,19 @@ const parSection = new Map();          // clé de section → objet section
 }
 lignes.forEach((l, i) => parSection.get(l[L_SEC]).lignes.push(i));
 function nomSection(s){ return vue.lang === "fr" ? s.nomFr : s.nomEn; }
+
+/* ------------------------------------------------- référent climatique
+   La banque « Climat et catastrophes » n'occupe pas une piste : elle est
+   rendue dans une bande fixe en haut, qui ne suit pas le défilement, pour
+   rester sous les yeux quelle que soit la piste consultée.                */
+const CATS = DONNEES.categories || [];
+const REPERES = (DONNEES.reperes || []).map((r, i) => ({
+  id: i, nom: r[0], nomFr: r[1], cat: r[2], ampleur: r[3],
+  debut: r[4], fin: r[5], notes: r[6], url: r[7],
+}));
+const catsVisibles = new Set(CATS.map((_, i) => i));
+function nomRepere(r){ return (vue.lang === "fr" && r.nomFr) ? r.nomFr : r.nom; }
+function nomCat(i){ return vue.lang === "fr" ? CATS[i][0] : CATS[i][1]; }
 
 const banques = DONNEES.banques || ["—"];
 const nbParBanque = banques.map(() => 0);
@@ -119,8 +136,14 @@ objets.forEach((o, i) => parLigne[o[O_LIG]].push(i));
 parLigne.forEach(a => a.sort((x, y) => posD(x) - posD(y)));
 lignes.forEach((l, i) => parSection.get(l[L_SEC]).nb += parLigne[i].length);
 
-const AN_MIN = Math.min(...objets.map(o => o[O_DEB])) - 40;
-const AN_MAX = Math.max(...objets.map(o => o[O_FIN] || o[O_DEB])) + 40;
+// L'axe englobe aussi les repères climatiques, qui remontent plus haut que
+// les objets historiques (l'événement de 8,2 ka, le tsunami de Storegga).
+const AN_MIN = Math.min(
+  Math.min(...objets.map(o => o[O_DEB])),
+  ...REPERES.map(r => r.debut)) - 40;
+const AN_MAX = Math.max(
+  Math.max(...objets.map(o => o[O_FIN] || o[O_DEB])),
+  ...REPERES.map(r => r.fin || r.debut)) + 40;
 
 /* ------------------------------------------------------------------- état */
 const vue = {
@@ -133,11 +156,16 @@ const vue = {
   verifOnly: false,
   masquerVides: false,
   banques: new Set(banques.map((_, i) => i)),   // banques affichées
+  bande: REPERES.length > 0,
+  repere: null,
   recherche: "",
 };
 
 const GOUT = 196;      // gouttière des intitulés de piste
 const H_REGLE = 44;
+const H_BANDE = 58;    // bande climatique, fixe sous la règle
+// Haut de la zone des pistes : sous la règle, et sous la bande si affichée.
+function HT(){ return H_REGLE + (vue.bande ? H_BANDE : 0); }
 const H_RANG = 21;     // hauteur d'un sous-rang dans une piste
 const H_SECTION = 25;
 const SEUIL_ETIQ = 0.55;   // px/an à partir duquel on écrit les intitulés
@@ -318,7 +346,7 @@ function construirePlan(){
     y += 6;
   }
   hauteurTotale = y;
-  vue.defil = Math.max(0, Math.min(vue.defil, hauteurTotale - (H - H_REGLE) + 20));
+  vue.defil = Math.max(0, Math.min(vue.defil, hauteurTotale - (H - HT()) + 20));
 }
 
 /* --------------------------------------------------------------- graduation */
@@ -479,20 +507,20 @@ function dessinerRegle(){
 
 function dessinerFond(){
   ctx.fillStyle = "#E7E9E4";
-  ctx.fillRect(GOUT, H_REGLE, W - GOUT, H - H_REGLE);
+  ctx.fillRect(GOUT, HT(), W - GOUT, H - HT());
   const anF = vue.debut + (W - GOUT) / vue.ppa;
   ctx.strokeStyle = "#D5DAD2";
   ctx.beginPath();
   for (const t of GRAD.grands) {
     const x = Math.round(GOUT + t.x) + .5;
     if (x < GOUT || x > W) continue;
-    ctx.moveTo(x, H_REGLE); ctx.lineTo(x, H);
+    ctx.moveTo(x, HT()); ctx.lineTo(x, H);
   }
   ctx.stroke();
   if (vue.debut < 1 && anF > 1) {
     const x = GOUT + (1 - vue.debut) * vue.ppa;
     ctx.strokeStyle = "rgba(142,35,23,.35)";
-    ctx.beginPath(); ctx.moveTo(x, H_REGLE); ctx.lineTo(x, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, HT()); ctx.lineTo(x, H); ctx.stroke();
   }
 }
 
@@ -522,8 +550,8 @@ function dessinerPistes(){
   ctx.textBaseline = "middle";
 
   for (const b of plan) {
-    const yTop = H_REGLE + b.y - vue.defil;
-    if (yTop > H || yTop + b.h < H_REGLE) continue;
+    const yTop = HT() + b.y - vue.defil;
+    if (yTop > H || yTop + b.h < HT()) continue;
 
     if (b.genre === "section") {
       ctx.fillStyle = "#DDE0DA";
@@ -656,26 +684,112 @@ function dessinerPistes(){
     ctx.stroke();
   }
   ctx.strokeStyle = "#9BA69E";
-  ctx.beginPath(); ctx.moveTo(GOUT - .5, H_REGLE); ctx.lineTo(GOUT - .5, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(GOUT - .5, HT()); ctx.lineTo(GOUT - .5, H); ctx.stroke();
   dessinerAscenseur();
 }
 
 const ASC_L = 9;
 function metriquesAscenseur(){
-  const piste = H - H_REGLE;
+  const piste = H - HT();
   const frac = Math.min(1, piste / hauteurTotale);
   const h = Math.max(34, piste * frac);
   const max = Math.max(1, hauteurTotale - piste);
-  const y = H_REGLE + (piste - h) * Math.min(1, vue.defil / max);
+  const y = HT() + (piste - h) * Math.min(1, vue.defil / max);
   return { piste, h, y, max, visible: frac < 1 };
 }
 function dessinerAscenseur(){
   const m = metriquesAscenseur();
   if (!m.visible) return;
   ctx.fillStyle = "rgba(155,166,158,.22)";
-  ctx.fillRect(W - ASC_L, H_REGLE, ASC_L, m.piste);
+  ctx.fillRect(W - ASC_L, HT(), ASC_L, m.piste);
   ctx.fillStyle = "#8B968E";
   ctx.fillRect(W - ASC_L + 2, m.y, ASC_L - 4, m.h);
+}
+
+/* ------------------------------------------------- dessin de la bande fixe
+   Couleur = catégorie (la piste d'origine dans le classeur), diamètre =
+   colonne Ampleur. Les épisodes longs sont en outre tracés en barre
+   translucide derrière les pastilles.                                     */
+let placesRep = [];
+
+function reperesVisibles(){
+  return REPERES.filter(r => catsVisibles.has(r.cat));
+}
+
+function dessinerBande(){
+  placesRep = [];
+  if (!vue.bande) return;
+  const y0 = H_REGLE, y1 = H_REGLE + H_BANDE;
+  ctx.fillStyle = "#EDEFEA";
+  ctx.fillRect(0, y0, W, H_BANDE);
+
+  const anF = vue.debut + (W - GOUT) / vue.ppa;
+  const X = a => GOUT + (a - vue.debut) * vue.ppa;
+  const yBarre = y1 - 12, yPoint = y0 + 23;
+
+  for (const r of reperesVisibles()) {
+    if (r.fin === null || r.fin - r.debut < 3) continue;
+    if (r.fin < vue.debut || r.debut > anF) continue;
+    const a = Math.max(X(r.debut), GOUT), b = Math.min(X(r.fin), W);
+    if (b - a < 1) continue;
+    ctx.fillStyle = CATS[r.cat][2] + "38";
+    ctx.fillRect(a, yBarre, b - a, 7);
+    ctx.fillStyle = CATS[r.cat][2] + "BB";
+    ctx.fillRect(a, yBarre, 1.5, 7);
+    ctx.fillRect(b - 1.5, yBarre, 1.5, 7);
+  }
+
+  // Les plus marquants sont placés en premier : à encombrement égal, ils
+  // gardent la ligne centrale et les moindres se décalent autour.
+  const occupe = [];
+  for (const r of reperesVisibles().slice().sort((a, b) => b.ampleur - a.ampleur)) {
+    const centre = r.fin === null ? r.debut : (r.debut + r.fin) / 2;
+    const x = X(centre);
+    if (x < GOUT - 20 || x > W + 20) continue;
+    const rad = 3 + r.ampleur * 1.3;
+    let dy = 0;
+    for (let k = 0; k < 5; k++) {
+      dy = k % 2 ? 11 * Math.ceil(k / 2) : -11 * (k / 2);
+      if (!occupe.some(o => Math.abs(o.x - x) < o.r + rad + 2
+                         && Math.abs(o.dy - dy) < 9)) break;
+    }
+    const cy = yPoint + dy;
+    occupe.push({ x, dy, r: rad });
+    ctx.beginPath();
+    ctx.arc(x, cy, rad, 0, 6.2832);
+    ctx.fillStyle = CATS[r.cat][2] + "E0";
+    ctx.fill();
+    if (vue.repere === r.id) {
+      ctx.strokeStyle = "#1B2320"; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    placesRep.push({ r, x, y: cy, rad });
+  }
+
+  ctx.fillStyle = "#F7F8F5";
+  ctx.fillRect(0, y0, GOUT, H_BANDE);
+  ctx.font = "11px " + getComputedStyle(document.body).getPropertyValue("--sans");
+  ctx.fillStyle = "#5C6862";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(T("bande"), 14, y0 + H_BANDE / 2);
+  ctx.strokeStyle = "#9BA69E";
+  ctx.beginPath();
+  ctx.moveTo(0, y1 - .5); ctx.lineTo(W, y1 - .5);
+  ctx.moveTo(GOUT - .5, y0); ctx.lineTo(GOUT - .5, y1);
+  ctx.stroke();
+}
+
+function dansBande(py){
+  return vue.bande && py > H_REGLE && py < H_REGLE + H_BANDE;
+}
+function repereSous(px, py){
+  if (!dansBande(py)) return null;
+  let best = null, d2 = 1e9;
+  for (const p of placesRep) {
+    const d = (px - p.x) ** 2 + (py - p.y) ** 2;
+    if (d <= (p.rad + 3) ** 2 && d < d2) { d2 = d; best = p.r; }
+  }
+  return best;
 }
 
 /* ------------------------------------------------------------- vue d'ensemble */
@@ -735,6 +849,7 @@ function rendre(){
     ctx.clearRect(0, 0, W, H);
     dessinerFond();
     dessinerPistes();
+    dessinerBande();
     dessinerRegle();
     dessinerApercu();
     const anF = vue.debut + (W - GOUT) / vue.ppa;
@@ -777,20 +892,39 @@ function borner(){
   vue.debut = Math.max(AN_MIN, Math.min(AN_MAX - span, vue.debut));
 }
 
+// Ctrl (ou ⌘) + molette : zoom. Molette seule : défilement vertical.
+// Maj + molette : défilement horizontal.
 toile.addEventListener("wheel", e => {
   e.preventDefault();
-  if (e.shiftKey) {
-    vue.defil = Math.max(0, vue.defil + e.deltaY);
+  if (e.ctrlKey || e.metaKey) {
+    zoomer(Math.pow(0.9985, e.deltaY), e.offsetX);
+  } else if (e.shiftKey) {
+    vue.debut += e.deltaY / vue.ppa;
+    borner();
     rendre();
   } else {
-    zoomer(Math.pow(0.9985, e.deltaY), e.offsetX);
+    vue.defil = Math.max(0, vue.defil + e.deltaY);
+    rendre();
   }
 }, { passive: false });
+
+// Le bouton du milieu ouvre le défilement automatique de Windows, qui capture
+// ensuite tous les mouvements du pointeur : il faut le neutraliser en amont.
+toile.addEventListener("auxclick", e => { if (e.button === 1) e.preventDefault(); });
+toile.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); });
 
 let glisse = null;
 let ascenseur = null;
 toile.addEventListener("pointerdown", e => {
-  if (e.offsetX > W - ASC_L - 4 && e.offsetY > H_REGLE) {
+  if (e.button === 1) {                 // molette enfoncée : on déplace la vue
+    e.preventDefault();
+    glisse = { x: e.offsetX, y: e.offsetY, debut: vue.debut, defil: vue.defil,
+               bouge: true };
+    toile.setPointerCapture(e.pointerId);
+    toile.classList.add("glisse");
+    return;
+  }
+  if (e.offsetX > W - ASC_L - 4 && e.offsetY > HT()) {
     const m = metriquesAscenseur();
     if (m.visible) {
       ascenseur = { y: e.offsetY, defil: vue.defil, m };
@@ -817,7 +951,13 @@ toile.addEventListener("pointermove", e => {
     vue.defil = Math.max(0, glisse.defil - dy);
     borner();
     rendre();
+  } else if (dansBande(e.offsetY)) {
+    const r = repereSous(e.offsetX, e.offsetY);
+    toile.style.cursor = r ? "pointer" : "default";
+    majBulleRepere(r, e);
+    if (vue.survol !== null) { vue.survol = null; rendre(); }
   } else {
+    toile.style.cursor = "";
     const t = objetSous(e.offsetX, e.offsetY);
     if (t !== vue.survol) { vue.survol = t; majBulle(e); rendre(); }
     else if (t !== null) majBulle(e);
@@ -829,6 +969,11 @@ toile.addEventListener("pointerup", e => {
   glisse = null;
   toile.classList.remove("glisse");
   if (!bouge) {
+    if (dansBande(e.offsetY)) {
+      const r = repereSous(e.offsetX, e.offsetY);
+      if (r) ouvrirRepere(r); else fermerFiche();
+      return;
+    }
     const t = objetSous(e.offsetX, e.offsetY);
     if (t !== null) ouvrirFiche(t); else fermerFiche();
   }
@@ -840,10 +985,10 @@ toile.addEventListener("pointerleave", () => {
 });
 
 function objetSous(px, py){
-  if (px < GOUT || py < H_REGLE) return null;
+  if (px < GOUT || py < HT()) return null;
   for (const b of plan) {
     if (b.genre !== "ligne") continue;
-    const yTop = H_REGLE + b.y - vue.defil;
+    const yTop = HT() + b.y - vue.defil;
     if (py < yTop || py > yTop + b.h) continue;
     const rang = Math.floor((py - yTop - 6) / H_RANG);
     let meilleur = null, dist = 1e9;
@@ -871,6 +1016,47 @@ function majBulle(e){
   bulle.style.left = x + "px"; bulle.style.top = y + "px";
   bulle.style.opacity = 1;
 }
+function periodeRep(r){
+  return r.fin === null || r.fin === r.debut
+    ? anLong(r.debut) : anLong(r.debut) + " → " + anLong(r.fin);
+}
+function majBulleRepere(r, e){
+  if (!r) { bulle.style.opacity = 0; return; }
+  bulle.innerHTML = "<b>" + echapper(nomRepere(r)) + "</b><i>" +
+    echapper(periodeRep(r)) + " · " + echapper(nomCat(r.cat)) +
+    " · " + T("ampleur") + " " + r.ampleur + "/5</i>";
+  const box = document.getElementById("scene").getBoundingClientRect();
+  let x = e.offsetX + 14;
+  if (x + 340 > box.width) x = e.offsetX - 340;
+  bulle.style.left = x + "px";
+  bulle.style.top = (e.offsetY + 16) + "px";
+  bulle.style.opacity = 1;
+}
+function ouvrirRepere(r){
+  vue.choisi = null;
+  vue.repere = r.id;
+  document.getElementById("tTitre").textContent = nomRepere(r);
+  const fr = document.getElementById("tFr");
+  const autre = vue.lang === "fr" ? r.nom : r.nomFr;
+  fr.textContent = (autre && autre !== nomRepere(r)) ? autre : "";
+  fr.style.display = fr.textContent ? "block" : "none";
+  const c = [
+    champ(T("datation"), echapper(periodeRep(r))),
+    champ(T("categorie"), '<span class="ruban"><i style="background:' +
+      CATS[r.cat][2] + '"></i>' + echapper(nomCat(r.cat)) + "</span>"),
+    champ(T("ampleur"), r.ampleur + " / 5"),
+  ];
+  let html = "<dl>" + c.join("") + "</dl>";
+  if (r.notes) html += '<div class="notice">' + echapper(r.notes) + "</div>";
+  if (r.url) html += '<p style="margin-top:10px"><a href="' + echapper(r.url) +
+    '" target="_blank" rel="noopener">' + echapper(r.url.replace(/^https?:\/\//, "")) +
+    "</a></p>";
+  document.getElementById("tCorps").innerHTML = html;
+  tiroir.classList.add("ouvert");
+  tiroir.setAttribute("aria-hidden", "false");
+  rendre();
+}
+
 function echapper(s){
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
@@ -964,6 +1150,7 @@ function ouvrirFiche(i){
 function champ(t, v){ return '<div class="champ"><dt>' + t + "</dt><dd>" + v + "</dd></div>"; }
 function fermerFiche(){
   vue.choisi = null;
+  vue.repere = null;
   tiroir.classList.remove("ouvert");
   tiroir.setAttribute("aria-hidden", "true");
   rendre();
@@ -991,7 +1178,7 @@ function viser(i, zoom){
   // amener la piste à l'écran
   construirePlan();
   const b = plan.find(p => p.genre === "ligne" && p.iLigne === objets[i][O_LIG]);
-  if (b) vue.defil = Math.max(0, b.y - (H - H_REGLE) / 3);
+  if (b) vue.defil = Math.max(0, b.y - (H - HT()) / 3);
   ouvrirFiche(i);
 }
 
@@ -1053,6 +1240,13 @@ function appliquerLangue(){
   d("tVides").textContent = T("vides");
   d("tSec").textContent = T("sec");
   d("tBanques").textContent = T("banques");
+  d("tReperes").textContent = T("reperes");
+  d("tBande").textContent = T("afficherBande");
+  listeCats.querySelectorAll("label").forEach((l, i) => {
+    l.innerHTML = echapper(nomCat(i)) +
+      ' <span class="compte">' + nbParCat[i] + "</span>";
+  });
+  if (vue.repere !== null) ouvrirRepere(REPERES[vue.repere]);
   d("toutCocher").textContent = T("cocher");
   d("toutDecocher").textContent = T("decocher");
   d("tAide").textContent = T("aide");
@@ -1091,6 +1285,25 @@ window.addEventListener("keydown", e => {
 });
 
 /* -------------------------------------------------------------- sections */
+const listeCats = document.getElementById("listeCats");
+const nbParCat = CATS.map((_, i) => REPERES.filter(r => r.cat === i).length);
+listeCats.innerHTML = CATS.map((c, i) =>
+  '<li><input type="checkbox" id="c' + i + '" checked data-c="' + i + '">' +
+  '<span class="pastille" style="background:' + c[2] + '"></span>' +
+  '<label for="c' + i + '">' + echapper(c[0]) +
+  ' <span class="compte">' + nbParCat[i] + "</span></label></li>").join("");
+listeCats.addEventListener("change", e => {
+  const i = e.target.dataset.c;
+  if (i === undefined) return;
+  if (e.target.checked) catsVisibles.add(+i); else catsVisibles.delete(+i);
+  rendre();
+});
+document.getElementById("optBande").onchange = e => {
+  vue.bande = e.target.checked;
+  listeCats.style.display = e.target.checked ? "" : "none";
+  rendre();
+};
+
 const listeBq = document.getElementById("listeBanques");
 listeBq.innerHTML = banques.map((b, i) =>
   '<li><input type="checkbox" id="b' + i + '" checked data-b="' + i + '">' +
@@ -1125,6 +1338,10 @@ function basculer(v){
 }
 
 /* ------------------------------------------------------------- démarrage */
+// Dans la version autonome, aucun chargeur ne retire l’écran d’attente.
+const ecranAttente = document.getElementById("chargement");
+if (ecranAttente) ecranAttente.remove();
+
 appliquerLangue();
 window.addEventListener("resize", redimensionner);
 redimensionner();
