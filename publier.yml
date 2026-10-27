@@ -56,6 +56,11 @@ jobs:
         run: |
           cp index.html app.js robots.txt site/
           touch site/.nojekyll
+          # Étiquette de version : le navigateur recharge le script et les
+          # données à chaque publication au lieu de garder l'ancienne copie.
+          v=$(cat site/app.js site/donnees.json | sha1sum | cut -c1-10)
+          sed -i "s/\"donnees\.json\"/\"donnees.json?v=$v\"/; s/\"app\.js\"/\"app.js?v=$v\"/" site/index.html
+          grep -n "?v=" site/index.html
           ls -lh site/
 
       - name: Refuser de publier un fichier de données suspect
