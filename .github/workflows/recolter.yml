@@ -1,0 +1,45 @@
+name: Récolter les banques ouvertes
+
+# Wikidata, chronologies Wikipédia et PeriodO, rangés dans sources/. Le
+# workflow « Publier la chronologie » s'enchaîne ensuite et les fusionne avec
+# le classeur.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 0"          # dimanche, 4 h 17 UTC
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recolte
+  cancel-in-progress: false
+
+jobs:
+  recolter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PeriodO ne sert son jeu de données que compressé en zstd.
+      - run: pip install zstandard
+
+      - name: Récolter
+        run: python recolter_sources.py
+
+      - name: Verser dans le dépôt si quelque chose a changé
+        run: |
+          git add sources/
+          if git diff --cached --quiet; then
+            echo "Aucun changement dans les banques ouvertes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Banques ouvertes : récolte du $(date -u +%Y-%m-%d)"
+          git push

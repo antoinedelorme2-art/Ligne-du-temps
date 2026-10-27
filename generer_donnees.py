@@ -12,6 +12,13 @@ onglets « Lignes du temps » et « Objets » dans le format compact que la page
 sait lire. Un classeur Google est téléchargé au format xlsx ; il doit être
 partagé en lecture par lien, sans quoi Google renvoie une page de connexion
 au lieu du fichier.
+
+S'y ajoutent les banques ouvertes rangées dans sources/ par
+recolter_sources.py (Wikidata, chronologies Wikipédia, PeriodO). Les objets
+qui décrivent le même événement d'une banque à l'autre sont rapprochés (même
+identifiant Wikidata, ou même intitulé à la même époque dans la même région),
+et chaque événement vu par plusieurs banques reçoit un objet dans la banque
+« Synthèse ».
 """
 import argparse
 import json
@@ -253,6 +260,7 @@ def indice_categorie(tl):
 # Rapprochements entre banques (même événement vu par deux sources). Lus
 # dans une colonne « Groupe » si le classeur en a une ; sinon repris du
 # donnees.json précédent, où ils ont été établis.
+GROUPE_AUTO = 100000             # au-delà : groupes recalculés à chaque fois
 groupes_precedents = {}
 climat_precedent = None          # (categories, reperes) du donnees.json versé
 for chemin in ("donnees.json", DST):
@@ -262,7 +270,7 @@ for chemin in ("donnees.json", DST):
         if climat_precedent is None and ancien.get("reperes"):
             climat_precedent = (ancien.get("categories", []), ancien["reperes"])
         for o in ancien.get("objets", []):
-            if len(o) > 17 and o[17]:
+            if len(o) > 17 and 0 < o[17] < GROUPE_AUTO:
                 cle_l = ancien["lignes"][o[2]][1]
                 groupes_precedents[(o[0], cle_l, ancien["banques"][o[16]], o[3])] = o[17]
         if groupes_precedents:
@@ -280,6 +288,7 @@ k = verifier(ws, ["Objet", "Version française", "Timeline", "Début (num)",
                   "Start Month", "Start Date", "Start Hour",
                   "End Month", "End Date", "End Hour", "Banque"])
 k_ampleur = k.get("Ampleur")
+k_liens = [k[c] for c in ("URL2", "URL3") if c in k]
 k_groupe = k.get("Groupe")
 objets, reperes, orphelins = [], [], set()
 
@@ -339,7 +348,191 @@ for row in ws.iter_rows(min_row=2, values_only=True):
                            row[k["End Hour"]]),
         indice_banque(banque),
         int(groupe),
+        [row[c] for c in k_liens if c < len(row) and row[c]] or 0,
     ])
+
+# ---------------------------------------------------------- banques ouvertes
+# Les fichiers de sources/ sont produits par recolter_sources.py (workflow
+# « Récolter les banques ouvertes »). Chaque objet y porte déjà sa piste.
+SOURCES = ("wikidata", "wikipedia", "periodo")
+BANQUE_SYNTHESE = "Synthèse"
+RANG_PRECISION = {"jour": 0, "mois": 1, "année": 2, "décennie": 3,
+                  "siècle": 4, "millénaire": 5}
+PISTES_GENERIQUES = {"Wars And Battles",
+                     "Other Events – Other Events and Developments"}
+
+
+def section_de_cle(cle):
+    return sec_fr_index[lignes[cle_vers_i[cle]][4]]
+
+
+licences = {}
+
+
+def charger_sources():
+    ici = os.path.dirname(os.path.abspath(__file__))
+    qids = {}                    # indice d'objet → identifiant Wikidata
+    for nom in SOURCES:
+        chemin = os.path.join(ici, "sources", nom + ".json")
+        try:
+            with open(chemin, encoding="utf-8") as f:
+                src = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"Banque ouverte « {nom} » absente ou illisible ({e}) : ignorée.")
+            continue
+        b = indice_banque(src["banque"])
+        licences[src["banque"]] = src.get("licence", "")
+        sans_piste = 0
+        for s in src["objets"]:
+            if s.get("piste") not in cle_vers_i:
+                sans_piste += 1
+                continue
+            secs = sorted({section_de_cle(c) for c in s.get("ensembles", [])
+                           if c in cle_vers_i})
+            debut, fin = int(s["debut"]), s.get("fin")
+            fin = int(fin) if isinstance(fin, (int, float)) and fin >= debut else None
+            notes = (s.get("notes") or "").strip()
+            if s.get("qid"):
+                qids[len(objets)] = s["qid"]
+            objets.append([
+                s["nom"], s.get("fr") or "", cle_vers_i[s["piste"]], debut, fin,
+                s.get("precision") or "année", s.get("qual") or "", 0, 0,
+                notes[:900], s.get("url") or "", 1, s.get("type") or "",
+                secs if len(secs) > 1 else 0,
+                minutes_dans_annee(debut, s.get("mois"), s.get("jour"), None),
+                minutes_dans_annee(fin, s.get("moisF"), s.get("jourF"), None),
+                b, 0, s.get("liens") or 0,
+            ])
+        print(f"Banque ouverte {src['banque']} : {len(src['objets']) - sans_piste} "
+              f"objets (récolte du {src.get('recolte', '?')})"
+              + (f", {sans_piste} sans piste connue" if sans_piste else ""))
+    return qids
+
+
+def cle_titre(t):
+    from rattachement import cle_titre as ct
+    return ct(t)
+
+
+def tolerance(o):
+    g = {"siècle": 50, "décennie": 5, "millénaire": 300}.get(o[5], 1)
+    if o[6] == "circa":
+        g = max(g, 10)
+    return max(g, int(o[7] or 0))
+
+
+RE_DATES_FIN = re.compile(
+    r"(?:\s*\([^()]*\d{3}[^()]*\)|,\s*(?:c\.\s*)?-?\d{1,4}\s*(?:BC|BCE|AD|CE)?"
+    r"(?:\s*[-–]\s*-?\d{1,4}\s*(?:BC|BCE|AD|CE)?)?)\s*$")
+
+
+def sans_dates(t):
+    """« Louis VII, 1137-1180 » ou « Old Kingdom (2686–2181 BC) » → sans dates."""
+    court = RE_DATES_FIN.sub("", t or "").strip()
+    return court if len(court) >= 3 else t
+
+
+def fusionner_sources():
+    """Ajoute les banques ouvertes, rapproche les doublons, crée « Synthèse »."""
+    qids = charger_sources()
+    n = len(objets)
+    parent = list(range(n))
+    taille = [1] * n
+
+    def racine(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def unir(a, b, plafond=12):
+        ra, rb = racine(a), racine(b)
+        if ra == rb or taille[ra] + taille[rb] > plafond:
+            return False
+        if taille[ra] < taille[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        taille[ra] += taille[rb]
+        return True
+
+    # rapprochements établis à la main : conservés tels quels
+    manuels = {}
+    for i, o in enumerate(objets):
+        if o[17]:
+            if o[17] in manuels:
+                unir(manuels[o[17]], i, plafond=10 ** 6)
+            else:
+                manuels[o[17]] = i
+    # même identifiant Wikidata
+    par_qid = {}
+    for i, q in qids.items():
+        if q in par_qid:
+            unir(par_qid[q], i)
+        else:
+            par_qid[q] = i
+    # même intitulé (anglais ou français), même époque, même région
+    par_cle = {}
+    for i, o in enumerate(objets):
+        for t in {cle_titre(o[0]), cle_titre(o[1])}:
+            if len(t) >= 8 or (" " in t and len(t) >= 5):
+                par_cle.setdefault(t, []).append(i)
+    for t, membres in par_cle.items():
+        if len(membres) < 2 or len(membres) > 40:
+            continue                      # intitulé trop générique
+        for x in range(len(membres)):
+            a = objets[membres[x]]
+            sa = {lignes[a[2]][4]} | ({sections[k][0] for k in a[13]} if a[13] else set())
+            for y in range(x + 1, len(membres)):
+                b = objets[membres[y]]
+                if abs(a[3] - b[3]) > max(tolerance(a), tolerance(b)):
+                    continue
+                if a[16] == b[16] and a[2] != b[2]:
+                    continue              # même banque, autre piste : distinct
+                sb = {lignes[b[2]][4]} | ({sections[k][0] for k in b[13]} if b[13] else set())
+                if not (sa & sb or lignes[a[2]][1] in PISTES_GENERIQUES
+                        or lignes[b[2]][1] in PISTES_GENERIQUES):
+                    continue
+                unir(membres[x], membres[y])
+
+    groupes = {}
+    for i in range(n):
+        groupes.setdefault(racine(i), []).append(i)
+    b_synth = indice_banque(BANQUE_SYNTHESE)
+    # banques du classeur d'abord : ce sont les choix de l'auteur
+    ordre_banque = {b: k for k, b in enumerate(banques)}
+    prochain = GROUPE_AUTO
+    nb_synth = 0
+    for membres in groupes.values():
+        if len(membres) < 2:
+            continue
+        numero = min((objets[i][17] for i in membres if objets[i][17]), default=0)
+        if not numero:
+            numero = prochain
+            prochain += 1
+        for i in membres:
+            objets[i][17] = numero
+        if len({objets[i][16] for i in membres}) < 2:
+            continue                      # doublon interne à une banque
+        meilleur = min(membres, key=lambda i: (
+            -objets[i][11], RANG_PRECISION.get(objets[i][5], 2),
+            ordre_banque[banques[objets[i][16]]]))
+        m = objets[meilleur]
+        fr = next((objets[i][1] for i in sorted(membres, key=lambda i: (
+            banques[objets[i][16]] != "Wikidata", ordre_banque[banques[objets[i][16]]]))
+            if objets[i][1]), "")
+        secs = {lignes[objets[i][2]][4] for i in membres}
+        for i in membres:
+            if objets[i][13]:
+                secs |= {sections[k][0] for k in objets[i][13]}
+        ens = sorted(sec_fr_index[s] for s in secs)[:6]
+        objets.append([sans_dates(m[0]), sans_dates(fr), m[2], m[3], m[4], m[5], m[6], m[7], m[8], "", "",
+                       max(objets[i][11] for i in membres), m[12],
+                       ens if len(ens) > 1 else 0, m[14], m[15], b_synth,
+                       numero, 0])
+        nb_synth += 1
+    print(f"Synthèse : {nb_synth} événements vus par plusieurs banques "
+          f"({sum(len(g) for g in groupes.values() if len(g) > 1)} objets regroupés)")
+
 
 # Un classeur sans lignes « Climat et catastrophes » viderait le bandeau :
 # on garde alors les repères du donnees.json versé dans le dépôt.
@@ -353,13 +546,15 @@ if not objets:
           "Vérifiez que la colonne « Début (num) » contient bien des valeurs "
           "calculées et non des formules vides.")
 
+fusionner_sources()
+
 dossier = os.path.dirname(DST)
 if dossier:
     os.makedirs(dossier, exist_ok=True)
 with open(DST, "w", encoding="utf-8") as f:
     json.dump({"lignes": lignes, "sections": sections, "banques": banques,
                "objets": objets, "categories": categories,
-               "reperes": reperes},
+               "reperes": reperes, "licences": licences},
               f, ensure_ascii=False, separators=(",", ":"))
 
 print(f"{DST} : {len(objets)} objets, {len(lignes)} pistes, "

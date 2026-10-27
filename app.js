@@ -3,12 +3,13 @@
 /* ------------------------------------------------------------------ données
    DONNEES.lignes : [id, nom, nomFr, section, sectionFr, couleur]
    DONNEES.objets : [nom, nomFr, iLigne, debut, fin, precision, qualD, margeD,
-                     margeF, notes, url, fiable, sousPiste]                   */
+                     margeF, notes, url, fiable, sousPiste, ensembles, tDebut,
+                     tFin, banque, groupe, liensSupplementaires]              */
 
 const L_ID=0, L_NOM=1, L_FR=2, L_SEC=3, L_SECFR=4, L_COUL=5;
 const O_NOM=0, O_FR=1, O_LIG=2, O_DEB=3, O_FIN=4, O_PREC=5, O_QUAL=6,
       O_MARGED=7, O_MARGEF=8, O_NOTES=9, O_URL=10, O_FIABLE=11, O_SOUS=12,
-      O_ENS=13, O_TD=14, O_TF=15, O_BQ=16, O_GRP=17;
+      O_ENS=13, O_TD=14, O_TF=15, O_BQ=16, O_GRP=17, O_LIENS=18;
 
 /* ------------------------------------------------- positions infra-annuelles
    O_TD / O_TF portent la position dans l'année, en minutes depuis le 1er
@@ -59,6 +60,8 @@ const I18N = {
     aide:"Ctrl+molette : zoom · Molette : défilement vertical · Maj+molette : défilement horizontal · Glisser (bouton gauche ou du milieu) : déplacer · Clic : fiche détaillée",
     aideTactile:"Pincer : zoom · Glisser : déplacer · Toucher : fiche détaillée",
     filtres:"Filtres",
+    synthese:"un objet par événement, toutes banques réunies",
+    selonBanques:"Selon les banques", liens:"Liens", licence:"Licence",
   },
   en: {
     titre:"Timelines", objets:"objects", pistes:"tracks",
@@ -83,6 +86,8 @@ const I18N = {
     aide:"Ctrl+wheel: zoom · Wheel: vertical scroll · Shift+wheel: horizontal scroll · Drag (left or middle button): pan · Click: details",
     aideTactile:"Pinch: zoom · Drag: pan · Tap: details",
     filtres:"Filters",
+    synthese:"one object per event, all banks combined",
+    selonBanques:"According to each bank", liens:"Links", licence:"Licence",
   },
 };
 function T(k){ return I18N[vue.lang][k]; }
@@ -119,9 +124,15 @@ const nbParBanque = banques.map(() => 0);
 objets.forEach(o => nbParBanque[o[O_BQ]]++);
 
 // Objets rapprochés d'une banque à l'autre : indexés par numéro de groupe.
-const parGroupe = new Map();
+// La banque « Synthèse » porte un objet par groupe vu par plusieurs banques ;
+// quand elle est affichée, il remplace les objets qu'il réunit.
+const B_SYNTH = banques.indexOf("Synthèse");
+const LICENCES = DONNEES.licences || {};
+const parGroupe = new Map();     // groupe → membres, objet de synthèse exclu
+const synthDe = new Map();       // groupe → indice de l'objet de synthèse
 objets.forEach((o, i) => {
   if (!o[O_GRP]) return;
+  if (o[O_BQ] === B_SYNTH) { synthDe.set(o[O_GRP], i); return; }
   if (!parGroupe.has(o[O_GRP])) parGroupe.set(o[O_GRP], []);
   parGroupe.get(o[O_GRP]).push(i);
 });
@@ -129,6 +140,11 @@ const signature = i => {
   const o = objets[i];
   return o[O_DEB] + ":" + o[O_FIN] + ":" + o[O_TD] + ":" + o[O_TF];
 };
+// Une synthèse est divergente si ses sources ne donnent pas toutes la même date.
+const synthDivergente = new Set();
+for (const [g, i] of synthDe)
+  if (new Set((parGroupe.get(g) || []).map(signature)).size > 1) synthDivergente.add(i);
+const syntheseVisible = () => B_SYNTH >= 0 && vue.banques.has(B_SYNTH);
 // couleurs portées par un objet : les siennes et celles des ensembles liés
 function couleursObjet(i, defaut){
   const e = objets[i][O_ENS];
@@ -251,8 +267,10 @@ let hauteurTotale = 0;
 function correspond(i){
   const o = objets[i];
   if (!vue.banques.has(o[O_BQ])) return false;
+  if (o[O_GRP] && o[O_BQ] !== B_SYNTH && syntheseVisible() && synthDe.has(o[O_GRP]))
+    return false;                 // remplacé par l'objet de synthèse
   // Datation identique dans plusieurs banques : un seul objet est tracé.
-  if (o[O_GRP]) {
+  if (o[O_GRP] && o[O_BQ] !== B_SYNTH) {
     const e = etatGroupe.get(o[O_GRP]);
     if (e && e.sigs.get(signature(i)) !== i) return false;
   }
@@ -307,7 +325,8 @@ function ranger(iLigne, anD, anF, etiquettes){
     const eg = o[O_GRP] ? etatGroupe.get(o[O_GRP]) : null;
     places.push({ i, r, x0, x1, xc0, xc1, etiq, xEtiq, dedans, lw,
                   couls: couleursObjet(i, coulLigne),
-                  divergent: !!(eg && eg.divergent) });
+                  divergent: o[O_BQ] === B_SYNTH ? synthDivergente.has(i)
+                                                 : !!(eg && eg.divergent) });
   }
   return { places, nbRangs: Math.max(1, rangs.length) };
 }
@@ -1210,8 +1229,20 @@ function ouvrirFiche(i){
       ? ' <span class="jeton">' + T("fiable") + "</span>"
       : ' <span class="jeton avert">' + T("pasFiable") + "</span>")));
   c.push(champ(T("ligne"), echapper(nomLigne(o[O_LIG]))));
-  c.push(champ(T("banque"), echapper(banques[o[O_BQ]])));
-  if (o[O_GRP]) {
+  c.push(champ(T("banque"), echapper(banques[o[O_BQ]]) +
+    (o[O_BQ] === B_SYNTH ? ' <span class="compte">(' + T("synthese") + ")</span>" : "")));
+  if (o[O_BQ] === B_SYNTH) {
+    const membres = parGroupe.get(o[O_GRP]) || [];
+    const bloc = membres.map(j => {
+      const meme = signature(j) === signature(i);
+      return '<div style="margin-top:4px"><span class="jeton' + (meme ? "" : " avert") + '">' +
+        T(meme ? "concordance" : "divergence") + "</span> " +
+        echapper(banques[objets[j][O_BQ]]) + " : " + echapper(datePhrase(objets[j])) +
+        (objets[j][O_LIG] !== o[O_LIG] ? " · " + echapper(nomLigne(objets[j][O_LIG])) : "") +
+        "</div>";
+    });
+    if (bloc.length) c.push(champ(T("selonBanques"), bloc.join("")));
+  } else if (o[O_GRP]) {
     const e = etatGroupe.get(o[O_GRP]);
     if (e) {
       const memeDate = e.membres.filter(j => j !== i && signature(j) === signature(i));
@@ -1234,14 +1265,46 @@ function ouvrirFiche(i){
   if (o[O_ENS]) c.push(champ(T("ensembles"), '<span class="rubans">' +
     o[O_ENS].map(k => '<span class="ruban"><i style="background:' + sections[k].couleur +
       '"></i>' + echapper(nomSection(sections[k])) + "</span>").join("") + "</span>"));
-  if (o[O_URL]) c.push(champ(T("source"), '<a href="' + echapper(o[O_URL]) +
-    '" target="_blank" rel="noopener">' + echapper(o[O_URL].replace(/^https?:\/\//, "")) + "</a>"));
+  // Liens : ceux de l'objet, ou ceux de toutes ses sources pour une synthèse.
+  const sources = o[O_BQ] === B_SYNTH ? (parGroupe.get(o[O_GRP]) || []) : [i];
+  const vus = new Set(), liens = [];
+  for (const j of sources) {
+    const oj = objets[j];
+    for (const u of [oj[O_URL], ...(oj[O_LIENS] || [])]) {
+      if (!u || vus.has(u)) continue;
+      vus.add(u);
+      liens.push('<div><a href="' + echapper(u) + '" target="_blank" rel="noopener">' +
+        echapper(nomLien(u)) + "</a>" +
+        (sources.length > 1 ? ' <span class="compte">' + echapper(banques[oj[O_BQ]]) + "</span>" : "") +
+        "</div>");
+    }
+  }
+  if (liens.length) c.push(champ(liens.length > 1 ? T("liens") : T("source"), liens.join("")));
+  const lic = [...new Set(sources.map(j => LICENCES[banques[objets[j][O_BQ]]]).filter(Boolean))];
+  if (lic.length) c.push(champ(T("licence"), echapper(lic.join(" · "))));
   let html = "<dl>" + c.join("") + "</dl>";
-  if (o[O_NOTES]) html += '<div class="notice">' + echapper(o[O_NOTES]) + "</div>";
+  // Notice : pour une synthèse, la plus complète de ses sources.
+  let notes = o[O_NOTES];
+  if (o[O_BQ] === B_SYNTH)
+    for (const j of sources) if ((objets[j][O_NOTES] || "").length > (notes || "").length) notes = objets[j][O_NOTES];
+  if (notes) html += '<div class="notice">' + echapper(notes) + "</div>";
   document.getElementById("tCorps").innerHTML = html;
   tiroir.classList.add("ouvert");
   tiroir.setAttribute("aria-hidden", "false");
   rendre();
+}
+// « fr.wikipedia.org/wiki/Bataille_d'Hastings » → « Wikipédia (fr) : Bataille d'Hastings »
+function nomLien(u){
+  let m = u.match(/^https?:\/\/(\w+)\.wikipedia\.org\/wiki\/(.+)$/);
+  if (m) {
+    let t = m[2];
+    try { t = decodeURIComponent(t); } catch (e) {}
+    return "Wikipédia (" + m[1] + ") : " + t.replace(/_/g, " ");
+  }
+  m = u.match(/wikidata\.org\/wiki\/(Q\d+)/);
+  if (m) return "Wikidata : " + m[1];
+  if (/n2t\.net\/ark:\/99152\/|perio\.do/.test(u)) return "PeriodO : " + u.replace(/^.*\//, "");
+  return u.replace(/^https?:\/\//, "");
 }
 function champ(t, v){ return '<div class="champ"><dt>' + t + "</dt><dd>" + v + "</dd></div>"; }
 function fermerFiche(){
@@ -1406,7 +1469,8 @@ document.getElementById("optBande").onchange = e => {
 const listeBq = document.getElementById("listeBanques");
 listeBq.innerHTML = banques.map((b, i) =>
   '<li><input type="checkbox" id="b' + i + '" checked data-b="' + i + '">' +
-  '<label for="b' + i + '">' + echapper(b) +
+  '<label for="b' + i + '"' + (i === B_SYNTH ? ' title="' + echapper(T("synthese")) + '"' : "") +
+  ">" + echapper(b) +
   ' <span class="compte">' + nbParBanque[i].toLocaleString("fr-CA") +
   "</span></label></li>").join("");
 listeBq.addEventListener("change", e => {
