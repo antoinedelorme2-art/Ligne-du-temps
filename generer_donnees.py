@@ -203,6 +203,71 @@ def ensembles(txt):
     return i if len(i) > 1 else 0
 
 
+# ------------------------------------------------------------------ banques
+# La banque « Climat et catastrophes » ne donne pas d'objets : ses lignes
+# deviennent les repères du bandeau fixe en haut de la page.
+BANQUE_CLIMAT = "Climat et catastrophes"
+banques = []
+if "Listes" in wb.sheetnames:
+    ws = wb["Listes"]
+    entetes = [c.value for c in next(ws.iter_rows(max_row=1))]
+    if "Banque" in entetes:
+        col = entetes.index("Banque")
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            b = row[col] if col < len(row) else None
+            if b and b != BANQUE_CLIMAT and b not in banques:
+                banques.append(b)
+
+
+def indice_banque(b):
+    b = b or "—"
+    if b not in banques:
+        banques.append(b)
+    return banques.index(b)
+
+
+# Noms anglais et couleurs de repli des catégories du bandeau climatique.
+CATS_EN = {
+    "Épisodes climatiques": ("Climatic episodes", "#2C6E8B"),
+    "Séismes et tsunamis": ("Earthquakes and tsunamis", "#6E4B1F"),
+    "Sécheresses et famines": ("Droughts and famines", "#B5871D"),
+    "Éruptions volcaniques": ("Volcanic eruptions", "#8E2317"),
+    "Épidémies": ("Epidemics", "#5B3A6B"),
+    "Impacts et événements cosmiques": ("Cosmic events", "#3F4A52"),
+}
+categories, cat_index = [], {}
+
+
+def indice_categorie(tl):
+    """« Climat – Épidémies » → indice de la catégorie « Épidémies »."""
+    nom = re.sub(r"^Climat\s*[–-]\s*", "", str(tl or "")).strip() or "Autre"
+    if nom not in cat_index:
+        en, coul = CATS_EN.get(nom, (nom, "#3F4A52"))
+        if tl in cle_vers_i:
+            coul = lignes[cle_vers_i[tl]][5] or coul
+        cat_index[nom] = len(categories)
+        categories.append([nom, en, coul])
+    return cat_index[nom]
+
+
+# Rapprochements entre banques (même événement vu par deux sources). Lus
+# dans une colonne « Groupe » si le classeur en a une ; sinon repris du
+# donnees.json précédent, où ils ont été établis.
+groupes_precedents = {}
+for chemin in ("donnees.json", DST):
+    try:
+        with open(chemin, encoding="utf-8") as f:
+            ancien = json.load(f)
+        for o in ancien.get("objets", []):
+            if len(o) > 17 and o[17]:
+                cle_l = ancien["lignes"][o[2]][1]
+                groupes_precedents[(o[0], cle_l, ancien["banques"][o[16]], o[3])] = o[17]
+        if groupes_precedents:
+            break
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        continue
+
+
 # -------------------------------------------------------------------- objets
 ws = wb["Objets"]
 k = verifier(ws, ["Objet", "Version française", "Timeline", "Début (num)",
@@ -210,16 +275,16 @@ k = verifier(ws, ["Objet", "Version française", "Timeline", "Début (num)",
                   "Marge début (± ans)", "Marge fin (± ans)", "Notes", "URL1",
                   "Fiabilité date", "Sous-piste", "Ensembles liés",
                   "Start Month", "Start Date", "Start Hour",
-                  "End Month", "End Date", "End Hour"])
-objets, orphelins = [], set()
+                  "End Month", "End Date", "End Hour", "Banque"])
+k_ampleur = k.get("Ampleur")
+k_groupe = k.get("Groupe")
+objets, reperes, orphelins = [], [], set()
 
 for row in ws.iter_rows(min_row=2, values_only=True):
     if not row or not row[k["Objet"]]:
         continue
     tl = row[k["Timeline"]]
-    if tl not in cle_vers_i:
-        orphelins.add(tl)
-        continue
+    banque = row[k["Banque"]]
     debut = row[k["Début (num)"]]
     if debut in (None, ""):
         continue
@@ -230,6 +295,26 @@ for row in ws.iter_rows(min_row=2, values_only=True):
     notes = (row[k["Notes"]] or "").strip()
     if len(notes) > 900:
         notes = notes[:900].rsplit(" ", 1)[0] + "…"
+    if banque == BANQUE_CLIMAT:
+        ampleur = row[k_ampleur] if k_ampleur is not None else None
+        reperes.append([
+            row[k["Objet"]],
+            row[k["Version française"]] or "",
+            indice_categorie(tl),
+            int(ampleur) if isinstance(ampleur, (int, float)) else 1,
+            int(debut),
+            fin,
+            notes,
+            row[k["URL1"]] or "",
+        ])
+        continue
+    if tl not in cle_vers_i:
+        orphelins.add(tl)
+        continue
+    groupe = row[k_groupe] if k_groupe is not None else None
+    if not isinstance(groupe, (int, float)) or not groupe:
+        groupe = groupes_precedents.get(
+            (row[k["Objet"]], tl, banque or "—", int(debut)), 0)
     objets.append([
         row[k["Objet"]],
         row[k["Version française"]] or "",
@@ -249,22 +334,29 @@ for row in ws.iter_rows(min_row=2, values_only=True):
                            row[k["Start Hour"]]),
         minutes_dans_annee(fin, row[k["End Month"]], row[k["End Date"]],
                            row[k["End Hour"]]),
+        indice_banque(banque),
+        int(groupe),
     ])
-
-dossier = os.path.dirname(DST)
-if dossier:
-    os.makedirs(dossier, exist_ok=True)
-with open(DST, "w", encoding="utf-8") as f:
-    json.dump({"lignes": lignes, "sections": sections, "objets": objets},
-              f, ensure_ascii=False, separators=(",", ":"))
 
 if not objets:
     echec("Aucun objet exploitable dans le classeur.",
           "Vérifiez que la colonne « Début (num) » contient bien des valeurs "
           "calculées et non des formules vides.")
 
+dossier = os.path.dirname(DST)
+if dossier:
+    os.makedirs(dossier, exist_ok=True)
+with open(DST, "w", encoding="utf-8") as f:
+    json.dump({"lignes": lignes, "sections": sections, "banques": banques,
+               "objets": objets, "categories": categories,
+               "reperes": reperes},
+              f, ensure_ascii=False, separators=(",", ":"))
+
 print(f"{DST} : {len(objets)} objets, {len(lignes)} pistes, "
-      f"{len(sections)} sections")
+      f"{len(sections)} sections, {len(reperes)} repères climatiques")
+print("Banques : " + ", ".join(
+    f"{b} ({sum(1 for o in objets if o[16] == i)})"
+    for i, b in enumerate(banques)))
 if orphelins:
     print("Pistes citées dans Objets mais absentes du registre :",
           ", ".join(sorted(orphelins)[:10]))
