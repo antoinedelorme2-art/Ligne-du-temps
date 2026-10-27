@@ -148,6 +148,28 @@ const synthDivergente = new Set();
 for (const [g, i] of synthDe)
   if (new Set((parGroupe.get(g) || []).map(signature)).size > 1) synthDivergente.add(i);
 const syntheseVisible = () => B_SYNTH >= 0 && vue.banques.has(B_SYNTH);
+// La Synthèse contient tous les événements : un objet fusionné pour ceux que
+// plusieurs banques décrivent, l'objet lui-même pour ceux qui n'ont qu'une
+// source. Ces derniers ne sont pas recopiés dans les données : quand la
+// Synthèse est cochée, ils s'affichent quelle que soit leur banque.
+function banqueVisible(i){
+  const o = objets[i];
+  if (vue.banques.has(o[O_BQ])) return true;
+  return syntheseVisible() && o[O_BQ] !== B_SYNTH && !(o[O_GRP] && synthDe.has(o[O_GRP]));
+}
+if (B_SYNTH >= 0) {
+  // un événement = un objet de synthèse, ou un objet sans doublon ailleurs
+  // (les doublons internes à une banque ne comptent qu'une fois par date)
+  const vus = new Set();
+  let n = synthDe.size;
+  objets.forEach((o, i) => {
+    if (o[O_BQ] === B_SYNTH || (o[O_GRP] && synthDe.has(o[O_GRP]))) return;
+    if (!o[O_GRP]) { n++; return; }
+    const k = o[O_GRP] + "|" + signature(i);
+    if (!vus.has(k)) { vus.add(k); n++; }
+  });
+  nbParBanque[B_SYNTH] = n;
+}
 // couleurs portées par un objet : les siennes et celles des ensembles liés
 function couleursObjet(i, defaut){
   const e = objets[i][O_ENS];
@@ -274,7 +296,7 @@ let hauteurTotale = 0;
 
 function correspond(i){
   const o = objets[i];
-  if (!vue.banques.has(o[O_BQ])) return false;
+  if (!banqueVisible(i)) return false;
   if (o[O_GRP] && o[O_BQ] !== B_SYNTH && syntheseVisible() && synthDe.has(o[O_GRP]))
     return false;                 // remplacé par l'objet de synthèse
   // Datation identique dans plusieurs banques : un seul objet est tracé.
@@ -345,7 +367,7 @@ let etatGroupe = new Map();
 function evaluerGroupes(){
   etatGroupe = new Map();
   for (const [g, membres] of parGroupe) {
-    const vus = membres.filter(i => vue.banques.has(objets[i][O_BQ]));
+    const vus = membres.filter(banqueVisible);
     if (!vus.length) continue;
     const sigs = new Map();
     for (const i of vus) {
@@ -1476,7 +1498,9 @@ document.getElementById("optBande").onchange = e => {
 };
 
 const listeBq = document.getElementById("listeBanques");
-listeBq.innerHTML = banques.map((b, i) =>
+// La Synthèse en tête : c'est la vue d'ensemble, les banques en sont le détail.
+const ordreBq = banques.map((_, i) => i).sort((a, b) => (b === B_SYNTH) - (a === B_SYNTH));
+listeBq.innerHTML = ordreBq.map(i => [banques[i], i]).map(([b, i]) =>
   '<li><input type="checkbox" id="b' + i + '" checked data-b="' + i + '">' +
   '<label for="b' + i + '"' + (i === B_SYNTH ? ' title="' + echapper(T("synthese")) + '"' : "") +
   ">" + echapper(b) +

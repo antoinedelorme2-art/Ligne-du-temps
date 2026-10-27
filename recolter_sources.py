@@ -755,6 +755,17 @@ def entree(texte_brut, piste, an, fin, circa, mois, jour, url, langue):
             o[k] = o[k][0].upper() + o[k][1:]
     if not o["nom"]:
         o["nom"] = o["fr"]
+    # articles cités dans la ligne : servent à reconnaître l'événement
+    cites = []
+    for cible in re.findall(r"\[\[([^\]|#]+)", texte_brut):
+        cible = cible.strip()
+        if ":" in cible or not cible:
+            continue
+        u = f"https://{langue}.wikipedia.org/wiki/" + urllib.parse.quote(
+            (cible[:1].upper() + cible[1:]).replace(" ", "_"))
+        if u not in cites:
+            cites.append(u)
+    o["cites"] = cites[:6]
     if article:
         o["article"] = f"https://{langue}.wikipedia.org/wiki/" + \
             urllib.parse.quote(article.replace(" ", "_")[:1].upper() + article.replace(" ", "_")[1:])
@@ -937,7 +948,8 @@ def recolter_wikipedia():
 
     # Identifiant Wikidata des articles d'événements cités, pour reconnaître
     # le même événement dans les autres banques.
-    articles = sorted({o["article"] for o in objets if o.get("article")})
+    articles = sorted({o["article"] for o in objets if o.get("article")} |
+                      {u for o in objets for u in o.get("cites", [])})
     vers_qid = {}
     for paquet in par_paquets(articles, 150):
         valeurs = " ".join("<" + a + ">" for a in paquet)
@@ -948,10 +960,14 @@ def recolter_wikipedia():
             print(f"::warning::Identifiants Wikidata : {err}")
     for o in objets:
         a = o.pop("article", None)
+        cites = o.pop("cites", [])
         if a:
             o["liens"] = [a]
             if a in vers_qid:
                 o["qid"] = vers_qid[a]
+        mentions = [vers_qid[u] for u in cites if u in vers_qid and vers_qid[u] != o.get("qid")]
+        if mentions:
+            o["mentions"] = mentions
     # Une même ligne reprise d'une page à l'autre (France / Empire…) : une fois.
     uniques, deja = [], set()
     for o in objets:

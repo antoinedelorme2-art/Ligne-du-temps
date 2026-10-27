@@ -366,7 +366,12 @@ PISTES_GENERIQUES = {"Wars And Battles",
                      "European Monarchies",
                      "European Monarchies – European Monarchies and Renaissance Rulers",
                      "Rome And Persia – Rulers"}
+TYPES_DURABLES = {"État historique", "Pandémie", "Épidémie"}
+MOTS_AUTRE_EVENEMENT = {"died", "dies", "dead", "death", "born", "killed",
+                        "assassinated", "executed", "deposed", "meurt", "mort",
+                        "nait", "naissance", "assassine", "execute", "depose"}
 vies = {}                        # indice d'objet → « Naissance : … · Mort : … »
+mentions = {}                    # indice d'objet → QID des articles cités
 
 
 def section_de_cle(cle):
@@ -403,6 +408,8 @@ def charger_sources():
                 qids[len(objets)] = s["qid"]
             if s.get("vie"):
                 vies[len(objets)] = s["vie"]
+            if s.get("mentions"):
+                mentions[len(objets)] = s["mentions"]
             # nature : « r » règne, « o » office ; « j » date du calendrier julien
             nature = (s.get("nature") or "") + ("j" if s.get("julien") else "")
             objets.append([
@@ -481,29 +488,64 @@ def fusionner_sources():
             unir(par_qid[q], i)
         else:
             par_qid[q] = i
+    def compatibles(a, b):
+        """Même époque, et même région ou piste thématique."""
+        oa, ob = objets[a], objets[b]
+        if abs(oa[3] - ob[3]) > max(tolerance(oa), tolerance(ob)):
+            return False
+        if oa[16] == ob[16] and oa[2] != ob[2]:
+            return False                  # même banque, autre piste : distinct
+        sa = {lignes[oa[2]][4]} | ({sections[k][0] for k in oa[13]} if oa[13] else set())
+        sb = {lignes[ob[2]][4]} | ({sections[k][0] for k in ob[13]} if ob[13] else set())
+        return bool(sa & sb or lignes[oa[2]][1] in PISTES_GENERIQUES
+                    or lignes[ob[2]][1] in PISTES_GENERIQUES)
+
+    def mots_forts(i):
+        """Mots porteurs de l'intitulé (4 lettres et plus, ou nombres)."""
+        return {m for t in (objets[i][0], objets[i][1]) for m in cle_titre(t).split()
+                if len(m) >= 4 or m.isdigit()}
+
+    def personne(i):
+        return bool(objets[i][19] and objets[i][19].strip("j"))
+
+    # une ligne de chronologie qui cite l'article d'un événement de la même année
+    # (les deux premiers articles seulement : le sujet de la ligne ; jamais un
+    # État ou une épidémie, souvent cités en passant)
+    for i, qs in mentions.items():
+        for q in qs[:2]:
+            j = par_qid.get(q)
+            if (j is not None and objets[j][12] not in TYPES_DURABLES
+                    and abs(objets[i][3] - objets[j][3]) <= 1
+                    and len(mots_forts(i) & mots_forts(j)) >= 2):
+                unir(i, j)
     # même intitulé (anglais ou français), même époque, même région
+    cles = {}
     par_cle = {}
     for i, o in enumerate(objets):
-        for t in {cle_titre(o[0]), cle_titre(o[1])}:
+        cles[i] = {cle_titre(o[0]), cle_titre(o[1])} - {""}
+        for t in cles[i]:
             if len(t) >= 8 or (" " in t and len(t) >= 5):
                 par_cle.setdefault(t, []).append(i)
     for t, membres in par_cle.items():
         if len(membres) < 2 or len(membres) > 40:
             continue                      # intitulé trop générique
         for x in range(len(membres)):
-            a = objets[membres[x]]
-            sa = {lignes[a[2]][4]} | ({sections[k][0] for k in a[13]} if a[13] else set())
             for y in range(x + 1, len(membres)):
-                b = objets[membres[y]]
-                if abs(a[3] - b[3]) > max(tolerance(a), tolerance(b)):
-                    continue
-                if a[16] == b[16] and a[2] != b[2]:
-                    continue              # même banque, autre piste : distinct
-                sb = {lignes[b[2]][4]} | ({sections[k][0] for k in b[13]} if b[13] else set())
-                if not (sa & sb or lignes[a[2]][1] in PISTES_GENERIQUES
-                        or lignes[b[2]][1] in PISTES_GENERIQUES):
-                    continue
-                unir(membres[x], membres[y])
+                if compatibles(membres[x], membres[y]):
+                    unir(membres[x], membres[y])
+    # une phrase qui commence par l'intitulé d'un événement :
+    # « Battle of Stoke, the decisive engagement… » ↔ « Battle of Stoke »
+    courts = {t: m for t, m in par_cle.items()
+              if 2 <= t.count(" ") + 1 <= 6 and len(m) <= 4}
+    for i in range(n):
+        for t in cles[i]:
+            mots = t.split()
+            for k in range(min(6, len(mots) - 1), 1, -1):
+                if mots[k] in MOTS_AUTRE_EVENEMENT:
+                    continue              # « Chlothar III died » n'est pas son règne
+                for j in courts.get(" ".join(mots[:k]), ()):
+                    if j != i and not personne(j) and compatibles(i, j):
+                        unir(i, j)
 
     groupes = {}
     for i in range(n):
