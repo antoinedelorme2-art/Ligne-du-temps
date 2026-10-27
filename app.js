@@ -57,6 +57,8 @@ const I18N = {
     bande:"Climat et catastrophes", categorie:"Catégorie", ampleur:"Ampleur",
     reperes:"Référent climatique", afficherBande:"Afficher la bande en haut",
     aide:"Ctrl+molette : zoom · Molette : défilement vertical · Maj+molette : défilement horizontal · Glisser (bouton gauche ou du milieu) : déplacer · Clic : fiche détaillée",
+    aideTactile:"Pincer : zoom · Glisser : déplacer · Toucher : fiche détaillée",
+    filtres:"Filtres",
   },
   en: {
     titre:"Timelines", objets:"objects", pistes:"tracks",
@@ -79,6 +81,8 @@ const I18N = {
     bande:"Climate and disasters", categorie:"Category", ampleur:"Magnitude",
     reperes:"Climate reference", afficherBande:"Show the band on top",
     aide:"Ctrl+wheel: zoom · Wheel: vertical scroll · Shift+wheel: horizontal scroll · Drag (left or middle button): pan · Click: details",
+    aideTactile:"Pinch: zoom · Drag: pan · Tap: details",
+    filtres:"Filters",
   },
 };
 function T(k){ return I18N[vue.lang][k]; }
@@ -161,7 +165,9 @@ const vue = {
   recherche: "",
 };
 
-const GOUT = 196;      // gouttière des intitulés de piste
+// Gouttière des intitulés de piste : plus étroite sur un téléphone.
+let GOUT = 196;
+const gouttiere = w => w < 560 ? 118 : 196;
 const H_REGLE = 44;
 const H_BANDE = 58;    // bande climatique, fixe sous la règle
 // Haut de la zone des pistes : sous la règle, et sous la bande si affichée.
@@ -771,7 +777,16 @@ function dessinerBande(){
   ctx.fillStyle = "#5C6862";
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText(T("bande"), 14, y0 + H_BANDE / 2);
+  // Intitulé sur deux lignes s'il ne tient pas dans la gouttière.
+  const mots = T("bande").split(" "), lignesTxt = [""];
+  for (const m of mots) {
+    const essai = (lignesTxt[lignesTxt.length - 1] + " " + m).trim();
+    if (ctx.measureText(essai).width > GOUT - 22 && lignesTxt[lignesTxt.length - 1])
+      lignesTxt.push(m);
+    else lignesTxt[lignesTxt.length - 1] = essai;
+  }
+  lignesTxt.forEach((t, k) =>
+    ctx.fillText(t, 14, y0 + H_BANDE / 2 + (k - (lignesTxt.length - 1) / 2) * 13));
   ctx.strokeStyle = "#9BA69E";
   ctx.beginPath();
   ctx.moveTo(0, y1 - .5); ctx.lineTo(W, y1 - .5);
@@ -826,12 +841,19 @@ function dessinerApercu(){
   ctxA.font = "10px " + getComputedStyle(document.body).getPropertyValue("--sans");
   ctxA.fillStyle = "#5C6862";
   ctxA.textBaseline = "bottom";
+  // Sur un écran étroit, on saute les années dont l'étiquette chevaucherait
+  // la précédente.
+  ctxA.textAlign = "center";
+  let finPrec = -Infinity;
   for (const a of [-3000, -2000, -1000, 1, 1000, 1500, 2000]) {
     if (a < AN_MIN || a > AN_MAX) continue;
     const x = (a - AN_MIN) / (AN_MAX - AN_MIN) * w;
-    ctxA.textAlign = "center";
-    ctxA.fillText(anCourt(a), x, h);
     ctxA.fillRect(x, h - 10, .7, 4);
+    const t = anCourt(a), demi = ctxA.measureText(t).width / 2;
+    const xt = Math.min(w - demi, Math.max(demi, x));
+    if (xt - demi < finPrec + 6) continue;
+    ctxA.fillText(t, xt, h);
+    finPrec = xt + demi;
   }
 }
 
@@ -862,6 +884,7 @@ function redimensionner(){
   const r = document.getElementById("scene").getBoundingClientRect();
   dpr = window.devicePixelRatio || 1;
   W = r.width; H = r.height;
+  GOUT = gouttiere(W);
   toile.width = W * dpr; toile.height = H * dpr;
   toile.style.width = W + "px"; toile.style.height = H + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -915,7 +938,26 @@ toile.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(
 
 let glisse = null;
 let ascenseur = null;
+// Doigts posés sur la toile ; à deux, on pince pour zoomer.
+const doigts = new Map();
+let pince = null;
+function etatPince(){
+  const [a, b] = [...doigts.values()];
+  return { d: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)),
+           x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+const seuilGlisse = e => e.pointerType === "touch" ? 8 : 3;
 toile.addEventListener("pointerdown", e => {
+  if (e.pointerType === "touch") {
+    doigts.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+    toile.setPointerCapture(e.pointerId);
+    if (doigts.size === 2) {
+      glisse = null; ascenseur = null;
+      pince = etatPince();
+      return;
+    }
+    if (doigts.size > 2) return;
+  }
   if (e.button === 1) {                 // molette enfoncée : on déplace la vue
     e.preventDefault();
     glisse = { x: e.offsetX, y: e.offsetY, debut: vue.debut, defil: vue.defil,
@@ -937,6 +979,17 @@ toile.addEventListener("pointerdown", e => {
   toile.classList.add("glisse");
 });
 toile.addEventListener("pointermove", e => {
+  if (doigts.has(e.pointerId)) doigts.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
+  if (pince) {
+    if (doigts.size < 2) return;
+    const n = etatPince();
+    vue.debut -= (n.x - pince.x) / vue.ppa;
+    vue.defil = Math.max(0, vue.defil - (n.y - pince.y));
+    pince = n.d === pince.d ? n : (zoomer(n.d / pince.d, n.x), n);
+    borner();
+    rendre();
+    return;
+  }
   if (ascenseur) {
     const m = ascenseur.m;
     const dy = (e.offsetY - ascenseur.y) * (m.max / Math.max(1, m.piste - m.h));
@@ -946,7 +999,7 @@ toile.addEventListener("pointermove", e => {
   }
   if (glisse) {
     const dx = e.offsetX - glisse.x, dy = e.offsetY - glisse.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) glisse.bouge = true;
+    if (Math.abs(dx) + Math.abs(dy) > seuilGlisse(e)) glisse.bouge = true;
     vue.debut = glisse.debut - dx / vue.ppa;
     vue.defil = Math.max(0, glisse.defil - dy);
     borner();
@@ -963,7 +1016,23 @@ toile.addEventListener("pointermove", e => {
     else if (t !== null) majBulle(e);
   }
 });
+function finDoigt(e){
+  doigts.delete(e.pointerId);
+  if (!pince) return false;
+  // Fin du pincement : le doigt restant continue de déplacer la vue,
+  // sans valoir pour un toucher.
+  pince = null;
+  const reste = [...doigts.values()][0];
+  glisse = reste ? { x: reste.x, y: reste.y, debut: vue.debut, defil: vue.defil, bouge: true } : null;
+  return true;
+}
+toile.addEventListener("pointercancel", e => {
+  finDoigt(e);
+  glisse = null; ascenseur = null;
+  toile.classList.remove("glisse");
+});
 toile.addEventListener("pointerup", e => {
+  if (finDoigt(e) || doigts.size) return;
   if (ascenseur) { ascenseur = null; return; }
   const bouge = glisse && glisse.bouge;
   glisse = null;
@@ -1249,7 +1318,10 @@ function appliquerLangue(){
   if (vue.repere !== null) ouvrirRepere(REPERES[vue.repere]);
   d("toutCocher").textContent = T("cocher");
   d("toutDecocher").textContent = T("decocher");
-  d("tAide").textContent = T("aide");
+  d("tAide").textContent = T(tactile.matches ? "aideTactile" : "aide");
+  d("tFiltres").textContent = T("filtres");
+  d("tFiltres2").textContent = T("filtres");
+  d("fermerFiltres").title = T("fermer");
   d("tFermer").title = T("fermer");
   liste.querySelectorAll("label").forEach((l, i) => {
     l.innerHTML = echapper(nomSection(sections[i])) +
@@ -1281,7 +1353,7 @@ window.addEventListener("keydown", e => {
   else if (e.key === "ArrowUp") { vue.defil = Math.max(0, vue.defil - 60); rendre(); }
   else if (e.key === "+" || e.key === "=") zoomer(1.5);
   else if (e.key === "-") zoomer(1 / 1.5);
-  else if (e.key === "Escape") fermerFiche();
+  else if (e.key === "Escape") { fermerFiche(); filtres(false); }
 });
 
 /* -------------------------------------------------------------- sections */
@@ -1337,6 +1409,19 @@ function basculer(v){
   rendre();
 }
 
+/* ------------------------------------------------- filtres sur téléphone */
+const tactile = window.matchMedia("(hover: none)");
+const boutonFiltres = document.getElementById("filtres");
+function filtres(ouvrir){
+  document.body.classList.toggle("filtres-ouverts", ouvrir);
+  boutonFiltres.setAttribute("aria-expanded", String(ouvrir));
+}
+boutonFiltres.onclick = () => filtres(!document.body.classList.contains("filtres-ouverts"));
+document.getElementById("fermerFiltres").onclick = () => filtres(false);
+document.getElementById("voile").onclick = () => filtres(false);
+// Un résultat de recherche choisi : on referme le tiroir pour voir l'objet.
+boiteResultats.addEventListener("click", () => filtres(false));
+
 /* ------------------------------------------------------------- démarrage */
 // Dans la version autonome, aucun chargeur ne retire l’écran d’attente.
 const ecranAttente = document.getElementById("chargement");
@@ -1344,7 +1429,11 @@ if (ecranAttente) ecranAttente.remove();
 
 appliquerLangue();
 window.addEventListener("resize", redimensionner);
+if (window.ResizeObserver)
+  new ResizeObserver(redimensionner).observe(document.getElementById("scene"));
 redimensionner();
-vue.ppa = (W - GOUT) / 1000;
-vue.debut = -600;
+// Sur un écran étroit, on part sur 300 ans pour que les intitulés s'affichent.
+const anneesDepart = W < 560 ? 300 : 1000;
+vue.ppa = (W - GOUT) / anneesDepart;
+vue.debut = anneesDepart === 1000 ? -600 : -450;
 rendre();
