@@ -216,6 +216,10 @@ function nomObjet(i){
   const o = objets[i];
   return (vue.lang === "fr" && o[O_FR]) ? o[O_FR] : o[O_NOM];
 }
+// Intitulé suivi de l'année de début : « Bataille de Hastings (1066) ».
+function nomAvecAn(i){
+  return nomObjet(i) + " (" + anCourt(objets[i][O_DEB]) + ")";
+}
 function nomLigne(i){
   const l = lignes[i];
   return (vue.lang === "fr" && l[L_FR]) ? l[L_FR] : l[L_NOM];
@@ -285,7 +289,7 @@ function ranger(iLigne, anD, anF, etiquettes){
     // recalage sur le bord de l'écran, sinon le texte glisse le long de la
     // barre pendant le déplacement.
     const barre = o[O_FIN] !== null && xc1 > xc0 + 2.5;
-    let etiq = etiquettes ? nomObjet(i) : null;
+    let etiq = etiquettes ? nomAvecAn(i) : null;
     let lw = etiq ? largeurTexte(etiq) : 0;
     let dedans = false, xEtiq = 0;
     if (etiq) {
@@ -1077,7 +1081,7 @@ const bulle = document.getElementById("bulle");
 function majBulle(e){
   if (vue.survol === null) { bulle.style.opacity = 0; return; }
   const o = objets[vue.survol];
-  bulle.innerHTML = "<b>" + echapper(nomObjet(vue.survol)) + "</b><i>" +
+  bulle.innerHTML = "<b>" + echapper(nomAvecAn(vue.survol)) + "</b><i>" +
     echapper(datePhrase(o)) + " · " + echapper(nomLigne(o[O_LIG])) + "</i>";
   const r = document.getElementById("scene").getBoundingClientRect();
   let x = e.offsetX + 14, y = e.offsetY + 16;
@@ -1170,7 +1174,7 @@ function ouvrirFiche(i){
   vue.choisi = i;
   const o = objets[i];
   const principal = nomObjet(i), second = (vue.lang === "fr" ? o[O_NOM] : o[O_FR]);
-  document.getElementById("tTitre").textContent = principal;
+  document.getElementById("tTitre").textContent = nomAvecAn(i);
   const fr = document.getElementById("tFr");
   const montrer = second && second !== principal;
   fr.textContent = montrer ? second : "";
