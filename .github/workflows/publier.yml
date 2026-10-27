@@ -1,9 +1,13 @@
 name: Publier la chronologie
 
-# Trois déclencheurs : le bouton manuel, un rendez-vous hebdomadaire, et
-# toute modification de l'interface poussée sur main.
+# Quatre déclencheurs : le bouton manuel, un rendez-vous hebdomadaire, la fin
+# d'une récolte des banques ouvertes, et toute modification de l'interface ou
+# des banques poussée sur main.
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Récolter les banques ouvertes"]
+    types: [completed]
   schedule:
     - cron: "0 11 * * 1"          # lundi, 11 h UTC (7 h à Montréal l'été)
   push:
@@ -13,6 +17,8 @@ on:
       - app.js
       - robots.txt
       - generer_donnees.py
+      - rattachement.py
+      - sources/**
       - .github/workflows/publier.yml
 
 permissions:
