@@ -4,12 +4,13 @@
    DONNEES.lignes : [id, nom, nomFr, section, sectionFr, couleur]
    DONNEES.objets : [nom, nomFr, iLigne, debut, fin, precision, qualD, margeD,
                      margeF, notes, url, fiable, sousPiste, ensembles, tDebut,
-                     tFin, banque, groupe, liensSupplementaires]              */
+                     tFin, banque, groupe, liensSupplementaires, nature]
+   nature : « r » règne, « o » office, « j » date du calendrier julien       */
 
 const L_ID=0, L_NOM=1, L_FR=2, L_SEC=3, L_SECFR=4, L_COUL=5;
 const O_NOM=0, O_FR=1, O_LIG=2, O_DEB=3, O_FIN=4, O_PREC=5, O_QUAL=6,
       O_MARGED=7, O_MARGEF=8, O_NOTES=9, O_URL=10, O_FIABLE=11, O_SOUS=12,
-      O_ENS=13, O_TD=14, O_TF=15, O_BQ=16, O_GRP=17, O_LIENS=18;
+      O_ENS=13, O_TD=14, O_TF=15, O_BQ=16, O_GRP=17, O_LIENS=18, O_NAT=19;
 
 /* ------------------------------------------------- positions infra-annuelles
    O_TD / O_TF portent la position dans l'année, en minutes depuis le 1er
@@ -62,6 +63,7 @@ const I18N = {
     filtres:"Filtres",
     synthese:"un objet par événement, toutes banques réunies",
     selonBanques:"Selon les banques", liens:"Liens", licence:"Licence",
+    julien:"calendrier julien", rgn:"rgn.", off:"off.",
   },
   en: {
     titre:"Timelines", objets:"objects", pistes:"tracks",
@@ -88,6 +90,7 @@ const I18N = {
     filtres:"Filters",
     synthese:"one object per event, all banks combined",
     selonBanques:"According to each bank", liens:"Links", licence:"Licence",
+    julien:"Julian calendar", rgn:"r.", off:"in office",
   },
 };
 function T(k){ return I18N[vue.lang][k]; }
@@ -234,8 +237,13 @@ function nomObjet(i){
   return (vue.lang === "fr" && o[O_FR]) ? o[O_FR] : o[O_NOM];
 }
 // Intitulé suivi de l'année de début : « Bataille de Hastings (1066) ».
+// Règnes et offices : la durée, « Louis XII (rgn. 1498-1515) ».
 function nomAvecAn(i){
-  return nomObjet(i) + " (" + anCourt(objets[i][O_DEB]) + ")";
+  const o = objets[i], n = o[O_NAT] || "";
+  if (n.includes("r") || n.includes("o"))
+    return nomObjet(i) + " (" + T(n.includes("r") ? "rgn" : "off") + " " + anCourt(o[O_DEB]) +
+      (o[O_FIN] !== null && o[O_FIN] !== o[O_DEB] ? "-" + anCourt(o[O_FIN]) : "") + ")";
+  return nomObjet(i) + " (" + anCourt(o[O_DEB]) + ")";
 }
 function nomLigne(i){
   const l = lignes[i];
@@ -1198,6 +1206,7 @@ function datePhrase(o){
   if (o[O_PREC] === "jour" || o[O_PREC] === "mois") {
     d = (o[O_QUAL] === "circa" ? T("vers") : "") + dateFine(o[O_DEB], o[O_TD], o[O_PREC]);
     if (o[O_FIN] !== null) d += " → " + dateFine(o[O_FIN], o[O_TF], o[O_PREC]);
+    if ((o[O_NAT] || "").includes("j")) d += " (" + T("julien") + ")";
     return d;
   }
   if (o[O_PREC] === "siècle") d = siecleDe(o[O_DEB]);

@@ -11,6 +11,8 @@ Aucune dépendance hors de la bibliothèque standard.
                            Wikipédias (seuil de notoriété par type)
   sources/wikipedia.json   lignes des pages « Chronologie de… » (fr) et
                            « Timeline of … history » (en)
+  sources/wikidata_regnes.json  règnes des monarques et mandats des chefs
+                           d'État et de gouvernement, avec naissance et mort
   sources/periodo.json     périodes nommées de PeriodO (perio.do)
 
 Chaque objet porte déjà sa piste (clé « Nom (clé) » du registre) ; c'est
@@ -172,7 +174,7 @@ def date_wd(valeur, precision, julien=False):
         an -= 1
     mois = mois if p >= 10 else 0
     jour = jour if p >= 11 else 0
-    return an, mois, jour, PRECISION_WD.get(p, "année")
+    return an, mois, jour, PRECISION_WD.get(p, "année"), bool(julien and p >= 11)
 
 
 # =================================================================== WIKIDATA
@@ -310,11 +312,163 @@ SELECT ?e ?t ?p ?cal WHERE {{
             "fin": fin[0] if fin else None,
             "moisF": fin[1] if fin else 0, "jourF": fin[2] if fin else 0,
             "precision": debut[3], "type": e["genre"],
+            "julien": debut[4] or bool(fin and fin[4]),
             "notes": notes, "url": "https://www.wikidata.org/wiki/" + q,
             "liens": liens, "qid": q, "notoriete": e["sl"],
         })
     print(f"Wikidata : {len(objets)} objets datés sur {len(entites)} entités")
     return ecrire("wikidata", "Wikidata", "Wikidata (CC0)", objets, 1000)
+
+
+# ========================================================= RÈGNES ET OFFICES
+# Fonctions occupées (P39) avec début et fin : règnes des monarques, mandats
+# des chefs d'État et de gouvernement. Chaque objet est le règne ou le mandat,
+# la notice donne la naissance et la mort de la personne.
+MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre"]
+
+
+def siecle_fr(an):
+    """1701 av. J.-C. → « XVIIIe siècle av. J.-C. »."""
+    n = (abs(an) - 1) // 100 + 1
+    rom = ""
+    for v, l in ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+                 (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+        while n >= v:
+            rom += l
+            n -= v
+    return rom + ("er" if rom == "I" else "e") + " siècle" + (" av. J.-C." if an < 0 else "")
+
+
+def date_fr(d):
+    """(an, mois, jour, précision, julien) → « 1er janvier 1515 (julien) »."""
+    an, mois, jour, prec, julien = d
+    a = f"{-an} av. J.-C." if an < 0 else str(an)
+    if prec in ("siècle", "millénaire"):
+        return siecle_fr(an)
+    if prec == "décennie":
+        return f"vers {a}"
+    t = a
+    if mois:
+        t = f"{MOIS_FR[mois - 1]} {a}"
+        if jour:
+            t = f"{'1er' if jour == 1 else jour} {t}"
+    return t + (" (julien)" if julien else "")
+
+
+GROUPES_FONCTIONS = [
+    # (racine de la classe de fonctions, nature, seuil de notoriété)
+    ("Q116", "r", 25),          # monarque
+    ("Q48352", "o", 40),        # chef d'État
+    ("Q14212", "o", 40),        # Premier ministre
+]
+
+
+def recolter_regnes():
+    fonctions = {}                       # QID de fonction → nature
+    for racine, nature, _ in GROUPES_FONCTIONS:
+        for r in sparql(f"SELECT DISTINCT ?f WHERE {{ ?f wdt:P279* wd:{racine} }}"):
+            fonctions.setdefault(qid(r["f"]), nature)    # monarque prioritaire
+    print(f"Règnes et offices : {len(fonctions)} fonctions")
+
+    mandats = {}                         # (personne, fonction, début) → mandat
+    for racine, nature, seuil in GROUPES_FONCTIONS:
+        liste = sorted(f for f, n in fonctions.items() if n == nature)
+        for paquet in par_paquets(liste, 300):
+            valeurs = " ".join("wd:" + q for q in paquet)
+            for r in sparql(f"""
+SELECT ?p ?f ?d ?dp ?dc ?e ?ep ?ec WHERE {{
+  VALUES ?f {{ {valeurs} }}
+  ?p p:P39 ?st . ?st ps:P39 ?f .
+  ?st pqv:P580 ?vd . ?vd wikibase:timeValue ?d ; wikibase:timePrecision ?dp ;
+                         wikibase:timeCalendarModel ?dc .
+  OPTIONAL {{ ?st pqv:P582 ?ve . ?ve wikibase:timeValue ?e ; wikibase:timePrecision ?ep ;
+                                   wikibase:timeCalendarModel ?ec . }}
+  ?p wikibase:sitelinks ?sl FILTER(?sl >= {seuil})
+}}"""):
+                d = date_wd(r["d"], r["dp"], r["dc"].endswith("Q1985786"))
+                if not d:
+                    continue
+                e = date_wd(r["e"], r["ep"], r["ec"].endswith("Q1985786")) if r.get("e") else None
+                cle = (qid(r["p"]), qid(r["f"]), d[0])
+                if cle not in mandats or (e and not mandats[cle]["fin"]):
+                    mandats[cle] = {"debut": d, "fin": e, "nature": fonctions[qid(r["f"])]}
+        print(f"   {racine} : {len(mandats)} mandats au total")
+
+    personnes = sorted({k[0] for k in mandats})
+    postes = sorted({k[1] for k in mandats})
+    infos = defaultdict(dict)
+    for paquet in par_paquets(personnes, 200):
+        valeurs = " ".join("wd:" + q for q in paquet)
+        for r in sparql(f"""
+SELECT ?x ?en ?fr ?frA ?enA WHERE {{ VALUES ?x {{ {valeurs} }}
+  OPTIONAL {{ ?x rdfs:label ?en FILTER(lang(?en) = "en") }}
+  OPTIONAL {{ ?x rdfs:label ?fr FILTER(lang(?fr) = "fr") }}
+  OPTIONAL {{ ?frA schema:about ?x ; schema:isPartOf <https://fr.wikipedia.org/> }}
+  OPTIONAL {{ ?enA schema:about ?x ; schema:isPartOf <https://en.wikipedia.org/> }}
+}}"""):
+            infos[qid(r["x"])].update({k: r[k] for k in ("en", "fr", "frA", "enA") if k in r})
+        for prop, cle in (("P569", "naissance"), ("P570", "mort")):
+            for r in sparql(f"""
+SELECT ?x ?t ?pr ?cal WHERE {{ VALUES ?x {{ {valeurs} }}
+  ?x p:{prop}/psv:{prop} ?v . ?v wikibase:timeValue ?t ; wikibase:timePrecision ?pr ;
+                                 wikibase:timeCalendarModel ?cal . }}"""):
+                d = date_wd(r["t"], r["pr"], r["cal"].endswith("Q1985786"))
+                if d and cle not in infos[qid(r["x"])]:
+                    infos[qid(r["x"])][cle] = d
+        print(f"   personnes : {min(len(personnes), personnes.index(paquet[-1]) + 1)}/{len(personnes)}")
+    # fonctions : libellés et territoire (P1001), pour choisir la piste
+    territoire = defaultdict(list)
+    for paquet in par_paquets(postes, 300):
+        valeurs = " ".join("wd:" + q for q in paquet)
+        for r in sparql(f"""
+SELECT ?x ?en ?fr WHERE {{ VALUES ?x {{ {valeurs} }}
+  OPTIONAL {{ ?x rdfs:label ?en FILTER(lang(?en) = "en") }}
+  OPTIONAL {{ ?x rdfs:label ?fr FILTER(lang(?fr) = "fr") }} }}"""):
+            infos[qid(r["x"])].update({k: r[k] for k in ("en", "fr") if k in r})
+        for r in sparql(f"""
+SELECT ?x ?l WHERE {{ VALUES ?x {{ {valeurs} }}
+  {{ ?x wdt:P1001 ?t }} UNION {{ ?x wdt:P17 ?t }}
+  ?t rdfs:label ?l FILTER(lang(?l) = "en") }}"""):
+            territoire[qid(r["x"])].append(r["l"])
+
+    objets, sans_piste = [], 0
+    for (p, f, _), m in mandats.items():
+        per, fct = infos.get(p, {}), infos.get(f, {})
+        nom_en, nom_fr = majuscule(per.get("en", "")), majuscule(per.get("fr", ""))
+        if not (nom_en or nom_fr):
+            continue
+        d, e = m["debut"], m["fin"]
+        if e and e[0] < d[0]:
+            e = None
+        piste = None
+        for t in territoire.get(f, []) + [fct.get("en", "")]:
+            piste = piste_pour(t, d[0])
+            if piste:
+                break
+        if not piste:
+            sans_piste += 1
+            continue
+        vie = []
+        if per.get("naissance"):
+            vie.append("Naissance : " + date_fr(per["naissance"]))
+        if per.get("mort"):
+            vie.append("Mort : " + date_fr(per["mort"]))
+        fonction = majuscule(fct.get("fr") or fct.get("en") or "")
+        objets.append({
+            "nom": nom_en or nom_fr, "fr": nom_fr if nom_fr != nom_en else "",
+            "piste": piste, "debut": d[0], "mois": d[1], "jour": d[2],
+            "fin": e[0] if e else None, "moisF": e[1] if e else 0,
+            "jourF": e[2] if e else 0, "precision": d[3],
+            "type": "Règne" if m["nature"] == "r" else "Office",
+            "nature": m["nature"], "julien": d[4] or bool(e and e[4]),
+            "vie": " · ".join(vie),
+            "notes": "\n".join(x for x in (fonction, " · ".join(vie)) if x),
+            "url": "https://www.wikidata.org/wiki/" + p,
+            "liens": [u for u in (per.get("frA"), per.get("enA")) if u],
+        })
+    print(f"Règnes et offices : {len(objets)} objets ({sans_piste} sans piste connue)")
+    return ecrire("wikidata_regnes", "Wikidata", "Wikidata (CC0)", objets, 500)
 
 
 # ================================================================== WIKIPÉDIA
@@ -887,10 +1041,11 @@ def recolter_periodo():
 
 
 if __name__ == "__main__":
-    voulues = sys.argv[1:] or ["wikidata", "wikipedia", "periodo"]
+    voulues = sys.argv[1:] or ["wikidata", "regnes", "wikipedia", "periodo"]
     echecs = []
     for nom in voulues:
-        fonction = {"wikidata": recolter_wikidata, "wikipedia": recolter_wikipedia,
+        fonction = {"wikidata": recolter_wikidata, "regnes": recolter_regnes,
+                    "wikipedia": recolter_wikipedia,
                     "periodo": recolter_periodo}[nom]
         try:
             fonction()

@@ -349,17 +349,24 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         indice_banque(banque),
         int(groupe),
         [row[c] for c in k_liens if c < len(row) and row[c]] or 0,
+        0,
     ])
 
 # ---------------------------------------------------------- banques ouvertes
 # Les fichiers de sources/ sont produits par recolter_sources.py (workflow
 # « Récolter les banques ouvertes »). Chaque objet y porte déjà sa piste.
-SOURCES = ("wikidata", "wikipedia", "periodo")
+SOURCES = ("wikidata", "wikidata_regnes", "wikipedia", "periodo")
 BANQUE_SYNTHESE = "Synthèse"
 RANG_PRECISION = {"jour": 0, "mois": 1, "année": 2, "décennie": 3,
                   "siècle": 4, "millénaire": 5}
+# Pistes thématiques : un objet qui s'y trouve peut correspondre à un objet
+# rangé sous son pays dans une autre banque.
 PISTES_GENERIQUES = {"Wars And Battles",
-                     "Other Events – Other Events and Developments"}
+                     "Other Events – Other Events and Developments",
+                     "European Monarchies",
+                     "European Monarchies – European Monarchies and Renaissance Rulers",
+                     "Rome And Persia – Rulers"}
+vies = {}                        # indice d'objet → « Naissance : … · Mort : … »
 
 
 def section_de_cle(cle):
@@ -394,6 +401,10 @@ def charger_sources():
             notes = (s.get("notes") or "").strip()
             if s.get("qid"):
                 qids[len(objets)] = s["qid"]
+            if s.get("vie"):
+                vies[len(objets)] = s["vie"]
+            # nature : « r » règne, « o » office ; « j » date du calendrier julien
+            nature = (s.get("nature") or "") + ("j" if s.get("julien") else "")
             objets.append([
                 s["nom"], s.get("fr") or "", cle_vers_i[s["piste"]], debut, fin,
                 s.get("precision") or "année", s.get("qual") or "", 0, 0,
@@ -401,7 +412,7 @@ def charger_sources():
                 secs if len(secs) > 1 else 0,
                 minutes_dans_annee(debut, s.get("mois"), s.get("jour"), None),
                 minutes_dans_annee(fin, s.get("moisF"), s.get("jourF"), None),
-                b, 0, s.get("liens") or 0,
+                b, 0, s.get("liens") or 0, nature or 0,
             ])
         print(f"Banque ouverte {src['banque']} : {len(src['objets']) - sans_piste} "
               f"objets (récolte du {src.get('recolte', '?')})"
@@ -513,7 +524,9 @@ def fusionner_sources():
             objets[i][17] = numero
         if len({objets[i][16] for i in membres}) < 2:
             continue                      # doublon interne à une banque
+        # un règne ou un mandat l'emporte sur un simple point daté
         meilleur = min(membres, key=lambda i: (
+            not (objets[i][19] and objets[i][19].strip("j")),
             -objets[i][11], RANG_PRECISION.get(objets[i][5], 2),
             ordre_banque[banques[objets[i][16]]]))
         m = objets[meilleur]
@@ -528,8 +541,14 @@ def fusionner_sources():
         objets.append([sans_dates(m[0]), sans_dates(fr), m[2], m[3], m[4], m[5], m[6], m[7], m[8], "", "",
                        max(objets[i][11] for i in membres), m[12],
                        ens if len(ens) > 1 else 0, m[14], m[15], b_synth,
-                       numero, 0])
+                       numero, 0, m[19]])
         nb_synth += 1
+        # naissance et mort de la personne : dans la notice de chaque source
+        vie = next((vies[i] for i in membres if i in vies), "")
+        if vie:
+            for i in membres:
+                if i not in vies and vie not in objets[i][9]:
+                    objets[i][9] = (vie + "\n\n" + objets[i][9]).strip()
     print(f"Synthèse : {nb_synth} événements vus par plusieurs banques "
           f"({sum(len(g) for g in groupes.values() if len(g) > 1)} objets regroupés)")
 
