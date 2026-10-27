@@ -254,10 +254,13 @@ def indice_categorie(tl):
 # dans une colonne « Groupe » si le classeur en a une ; sinon repris du
 # donnees.json précédent, où ils ont été établis.
 groupes_precedents = {}
+climat_precedent = None          # (categories, reperes) du donnees.json versé
 for chemin in ("donnees.json", DST):
     try:
         with open(chemin, encoding="utf-8") as f:
             ancien = json.load(f)
+        if climat_precedent is None and ancien.get("reperes"):
+            climat_precedent = (ancien.get("categories", []), ancien["reperes"])
         for o in ancien.get("objets", []):
             if len(o) > 17 and o[17]:
                 cle_l = ancien["lignes"][o[2]][1]
@@ -337,6 +340,13 @@ for row in ws.iter_rows(min_row=2, values_only=True):
         indice_banque(banque),
         int(groupe),
     ])
+
+# Un classeur sans lignes « Climat et catastrophes » viderait le bandeau :
+# on garde alors les repères du donnees.json versé dans le dépôt.
+if not reperes and climat_precedent:
+    categories, reperes = climat_precedent
+    print(f"Aucun repère climatique dans le classeur : {len(reperes)} repris "
+          "du donnees.json du dépôt.")
 
 if not objets:
     echec("Aucun objet exploitable dans le classeur.",
