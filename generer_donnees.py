@@ -381,8 +381,19 @@ def section_de_cle(cle):
 licences = {}
 
 
+# Pas d'objet des banques ouvertes avant le plus ancien repère climatique du
+# bandeau : il fixe le début de la frise. Au-delà, ce sont des mythes (règne
+# d'Amaterasu, « 2 343 127 av. J.-C. ») ou de la préhistoire qui étirerait
+# l'axe et la barre de défilement. Une période de plus de 4 000 ans
+# (« Holocene », « Prehistoric, unspecified ») n'apprend rien non plus.
+DUREE_MAX = 4000
+ANNEE = date.today().year
+
+
 def charger_sources():
     ici = os.path.dirname(os.path.abspath(__file__))
+    plancher = min((r[4] for r in reperes), default=-6500)
+    ecartes = 0
     qids = {}                    # indice d'objet → identifiant Wikidata
     for nom in SOURCES:
         chemin = os.path.join(ici, "sources", nom + ".json")
@@ -403,6 +414,18 @@ def charger_sources():
                            if c in cle_vers_i})
             debut, fin = int(s["debut"]), s.get("fin")
             fin = int(fin) if isinstance(fin, (int, float)) and fin >= debut else None
+            # Date connue seulement au siècle : le début de ce siècle (Wikidata
+            # note « XXIe siècle » 2100, ce qui placerait l'objet dans le futur).
+            if s.get("precision") in ("siècle", "millénaire"):
+                n = (abs(debut) - 1) // 100
+                debut = n * 100 + 1 if debut > 0 else -(n + 1) * 100
+            # Fin dans le futur (« jusqu'en 2100 ») : arrêtée à aujourd'hui.
+            if fin is not None and fin > ANNEE:
+                fin = ANNEE
+            if (debut < plancher or debut > ANNEE
+                    or (fin is not None and fin - debut > DUREE_MAX)):
+                ecartes += 1
+                continue
             notes = (s.get("notes") or "").strip()
             if s.get("qid"):
                 qids[len(objets)] = s["qid"]
@@ -424,6 +447,9 @@ def charger_sources():
         print(f"Banque ouverte {src['banque']} : {len(src['objets']) - sans_piste} "
               f"objets (récolte du {src.get('recolte', '?')})"
               + (f", {sans_piste} sans piste connue" if sans_piste else ""))
+    if ecartes:
+        print(f"Banques ouvertes : {ecartes} objets écartés (avant {-plancher} av. J.-C., "
+              f"après {ANNEE} ou période de plus de {DUREE_MAX} ans)")
     return qids
 
 
