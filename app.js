@@ -111,6 +111,7 @@ const REPERES = (DONNEES.reperes || []).map((r, i) => ({
 }));
 const catsVisibles = new Set(CATS.map((_, i) => i));
 function nomRepere(r){ return (vue.lang === "fr" && r.nomFr) ? r.nomFr : r.nom; }
+function nomRepAvecAn(r){ return nomRepere(r) + " (" + anCourt(r.debut) + ")"; }
 function nomCat(i){ return vue.lang === "fr" ? CATS[i][0] : CATS[i][1]; }
 
 const banques = DONNEES.banques || ["—"];
@@ -775,6 +776,28 @@ function dessinerBande(){
     placesRep.push({ r, x, y: cy, rad });
   }
 
+  // Intitulés « titre (année) » à droite des pastilles, là où ils ne
+  // chevauchent ni une autre pastille ni un autre intitulé ; les repères les
+  // plus marquants sont servis d'abord.
+  ctx.font = "10.5px " + getComputedStyle(document.body).getPropertyValue("--sans");
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  const posees = [];
+  for (const p of placesRep) {
+    const t = nomRepAvecAn(p.r);
+    const x0 = p.x + p.rad + 4, x1 = x0 + largeurTexte(t);
+    if (x0 < GOUT + 2 || x1 > W - 12) continue;
+    const gene = placesRep.some(q => q !== p && Math.abs(q.y - p.y) < q.rad + 7
+                                && q.x + q.rad > x0 - 2 && q.x - q.rad < x1 + 2)
+              || posees.some(e => Math.abs(e.y - p.y) < 11 && e.x1 > x0 - 6 && e.x0 < x1 + 6);
+    if (gene) continue;
+    posees.push({ x0, x1, y: p.y });
+    ctx.fillStyle = "rgba(237,239,234,.85)";
+    ctx.fillRect(x0 - 2, p.y - 6.5, x1 - x0 + 4, 13);
+    ctx.fillStyle = "#3D4843";
+    ctx.fillText(t, x0, p.y + .5);
+  }
+
   ctx.fillStyle = "#F7F8F5";
   ctx.fillRect(0, y0, GOUT, H_BANDE);
   ctx.font = "11px " + getComputedStyle(document.body).getPropertyValue("--sans");
@@ -1095,7 +1118,7 @@ function periodeRep(r){
 }
 function majBulleRepere(r, e){
   if (!r) { bulle.style.opacity = 0; return; }
-  bulle.innerHTML = "<b>" + echapper(nomRepere(r)) + "</b><i>" +
+  bulle.innerHTML = "<b>" + echapper(nomRepAvecAn(r)) + "</b><i>" +
     echapper(periodeRep(r)) + " · " + echapper(nomCat(r.cat)) +
     " · " + T("ampleur") + " " + r.ampleur + "/5</i>";
   const box = document.getElementById("scene").getBoundingClientRect();
@@ -1108,7 +1131,7 @@ function majBulleRepere(r, e){
 function ouvrirRepere(r){
   vue.choisi = null;
   vue.repere = r.id;
-  document.getElementById("tTitre").textContent = nomRepere(r);
+  document.getElementById("tTitre").textContent = nomRepAvecAn(r);
   const fr = document.getElementById("tFr");
   const autre = vue.lang === "fr" ? r.nom : r.nomFr;
   fr.textContent = (autre && autre !== nomRepere(r)) ? autre : "";
