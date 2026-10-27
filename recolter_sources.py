@@ -1011,7 +1011,7 @@ def recolter_periodo():
             if not (en or fr):
                 continue
             debut, fin = an_periodo(p.get("start")), an_periodo(p.get("stop"))
-            if debut is None or fin is None or fin < debut or debut < -12000:
+            if debut is None or fin is None or fin < debut or debut < -15000:
                 continue
             couverture = [s.get("label", "") for s in p.get("spatialCoverage", [])]
             pistes = []

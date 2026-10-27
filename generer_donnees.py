@@ -381,18 +381,19 @@ def section_de_cle(cle):
 licences = {}
 
 
-# Pas d'objet des banques ouvertes avant le plus ancien repère climatique du
-# bandeau : il fixe le début de la frise. Au-delà, ce sont des mythes (règne
-# d'Amaterasu, « 2 343 127 av. J.-C. ») ou de la préhistoire qui étirerait
-# l'axe et la barre de défilement. Une période de plus de 4 000 ans
-# (« Holocene », « Prehistoric, unspecified ») n'apprend rien non plus.
+# Pas d'objet des banques ouvertes avant 15 000 av. J.-C. : au-delà, ce sont
+# des mythes (règne d'Amaterasu, « 2 343 127 av. J.-C. ») qui étireraient
+# l'axe et la barre de défilement.
+PLANCHER = -15000
+# Une période de plus de 4 000 ans (« Holocene », « Prehistoric,
+# unspecified ») n'apprend rien non plus.
 DUREE_MAX = 4000
 ANNEE = date.today().year
 
 
 def charger_sources():
     ici = os.path.dirname(os.path.abspath(__file__))
-    plancher = min((r[4] for r in reperes), default=-6500)
+    plancher = PLANCHER
     ecartes = 0
     qids = {}                    # indice d'objet → identifiant Wikidata
     for nom in SOURCES:
