@@ -61,7 +61,7 @@ const I18N = {
     aide:"Ctrl+molette : zoom · Molette : défilement vertical · Maj+molette : défilement horizontal · Glisser (bouton gauche ou du milieu) : déplacer · Clic : fiche détaillée",
     aideTactile:"Pincer : zoom · Glisser : déplacer · Toucher : fiche détaillée",
     filtres:"Filtres",
-    synthese:"un objet par événement, toutes banques réunies",
+    synthese:"fusionne les doublons des banques cochées ; cochée seule : toutes les banques",
     selonBanques:"Selon les banques", liens:"Liens", licence:"Licence",
     julien:"calendrier julien", rgn:"rgn.", off:"off.",
   },
@@ -88,7 +88,7 @@ const I18N = {
     aide:"Ctrl+wheel: zoom · Wheel: vertical scroll · Shift+wheel: horizontal scroll · Drag (left or middle button): pan · Click: details",
     aideTactile:"Pinch: zoom · Drag: pan · Tap: details",
     filtres:"Filters",
-    synthese:"one object per event, all banks combined",
+    synthese:"merges duplicates across the checked banks; checked alone: all banks",
     selonBanques:"According to each bank", liens:"Links", licence:"Licence",
     julien:"Julian calendar", rgn:"r.", off:"in office",
   },
@@ -119,7 +119,8 @@ const REPERES = (DONNEES.reperes || []).map((r, i) => ({
 }));
 const catsVisibles = new Set(CATS.map((_, i) => i));
 function nomRepere(r){ return (vue.lang === "fr" && r.nomFr) ? r.nomFr : r.nom; }
-function nomRepAvecAn(r){ return nomRepere(r) + " (" + anCourt(r.debut) + ")"; }
+// Période significative : « Peste d'Athènes (430-426 av.) ».
+function nomRepAvecAn(r){ return nomRepere(r) + " (" + plageAns(r.debut, r.fin) + ")"; }
 function nomCat(i){ return vue.lang === "fr" ? CATS[i][0] : CATS[i][1]; }
 
 const banques = DONNEES.banques || ["—"];
@@ -148,14 +149,23 @@ const synthDivergente = new Set();
 for (const [g, i] of synthDe)
   if (new Set((parGroupe.get(g) || []).map(signature)).size > 1) synthDivergente.add(i);
 const syntheseVisible = () => B_SYNTH >= 0 && vue.banques.has(B_SYNTH);
-// La Synthèse contient tous les événements : un objet fusionné pour ceux que
-// plusieurs banques décrivent, l'objet lui-même pour ceux qui n'ont qu'une
-// source. Ces derniers ne sont pas recopiés dans les données : quand la
-// Synthèse est cochée, ils s'affichent quelle que soit leur banque.
+// La Synthèse fusionne les doublons des banques cochées : un objet fusionné
+// pour un événement que plusieurs banques décrivent, l'objet lui-même sinon.
+// Cochée seule, elle porte sur toutes les banques. Décochée, chaque banque
+// cochée s'affiche telle quelle, doublons compris.
+function banquesSources(){
+  const b = new Set(vue.banques);
+  b.delete(B_SYNTH);
+  return b.size ? b : new Set(banques.map((_, i) => i).filter(i => i !== B_SYNTH));
+}
+let sourcesVues = null;          // recalculé à chaque rendu (evaluerGroupes)
 function banqueVisible(i){
   const o = objets[i];
-  if (vue.banques.has(o[O_BQ])) return true;
-  return syntheseVisible() && o[O_BQ] !== B_SYNTH && !(o[O_GRP] && synthDe.has(o[O_GRP]));
+  if (!syntheseVisible()) return vue.banques.has(o[O_BQ]);
+  const src = sourcesVues || banquesSources();
+  if (o[O_BQ] === B_SYNTH)        // la synthèse d'un groupe dont une source est cochée
+    return (parGroupe.get(o[O_GRP]) || []).some(j => src.has(objets[j][O_BQ]));
+  return src.has(o[O_BQ]);
 }
 if (B_SYNTH >= 0) {
   // un événement = un objet de synthèse, ou un objet sans doublon ailleurs
@@ -244,6 +254,12 @@ function anCourt(y){
   if (y >= 0) return String(y);
   return (-y) + (vue.lang === "fr" ? " av." : " BC");
 }
+// « 430-426 av. », « 27 av.-14 », « 1347-1351 » ; une seule année sans fin.
+function plageAns(d, f){
+  if (f === null || f === undefined || f === d) return anCourt(d);
+  if (d < 0 && f < 0) return (-d) + "-" + anCourt(f);
+  return anCourt(d) + "-" + anCourt(f);
+}
 
 const SUFF_EN = { 1:"st", 2:"nd", 3:"rd" };
 function siecleDe(y){
@@ -263,8 +279,8 @@ function nomObjet(i){
 function nomAvecAn(i){
   const o = objets[i], n = o[O_NAT] || "";
   if (n.includes("r") || n.includes("o"))
-    return nomObjet(i) + " (" + T(n.includes("r") ? "rgn" : "off") + " " + anCourt(o[O_DEB]) +
-      (o[O_FIN] !== null && o[O_FIN] !== o[O_DEB] ? "-" + anCourt(o[O_FIN]) : "") + ")";
+    return nomObjet(i) + " (" + T(n.includes("r") ? "rgn" : "off") + " " +
+      plageAns(o[O_DEB], o[O_FIN]) + ")";
   return nomObjet(i) + " (" + anCourt(o[O_DEB]) + ")";
 }
 function nomLigne(i){
@@ -365,6 +381,7 @@ function ranger(iLigne, anD, anF, etiquettes){
 // l'objet retenu quand plusieurs banques disent exactement la même chose.
 let etatGroupe = new Map();
 function evaluerGroupes(){
+  sourcesVues = syntheseVisible() ? banquesSources() : null;
   etatGroupe = new Map();
   for (const [g, membres] of parGroupe) {
     const vus = membres.filter(banqueVisible);
@@ -1430,6 +1447,7 @@ function appliquerLangue(){
   d("tVides").textContent = T("vides");
   d("tSec").textContent = T("sec");
   d("tBanques").textContent = T("banques");
+  if (d("aideSynth")) d("aideSynth").textContent = T("synthese");
   d("tReperes").textContent = T("reperes");
   d("tBande").textContent = T("afficherBande");
   listeCats.querySelectorAll("label").forEach((l, i) => {
@@ -1504,8 +1522,9 @@ listeBq.innerHTML = ordreBq.map(i => [banques[i], i]).map(([b, i]) =>
   '<li><input type="checkbox" id="b' + i + '" checked data-b="' + i + '">' +
   '<label for="b' + i + '"' + (i === B_SYNTH ? ' title="' + echapper(T("synthese")) + '"' : "") +
   ">" + echapper(b) +
-  ' <span class="compte">' + nbParBanque[i].toLocaleString("fr-CA") +
-  "</span></label></li>").join("");
+  ' <span class="compte">' + nbParBanque[i].toLocaleString("fr-CA") + "</span>" +
+  (i === B_SYNTH ? '<br><span class="compte" id="aideSynth">' + echapper(T("synthese")) + "</span>" : "") +
+  "</label></li>").join("");
 listeBq.addEventListener("change", e => {
   const i = e.target.dataset.b;
   if (i === undefined) return;
